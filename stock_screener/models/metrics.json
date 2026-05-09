@@ -1,0 +1,9 @@
+{
+  "train_rows": 52677,
+  "valid_rows": 12366,
+  "model_type": "sklearn_hist_gradient_boosting",
+  "positive_rate_pct": 1.32835201328352,
+  "valid_auc": 0.7246318198832321,
+  "valid_average_precision": 0.0545012345946439,
+  "lightgbm_fallback_reason": "dlopen(/Users/aw/.pyenv/versions/3.10.13/lib/python3.10/site-packages/lightgbm/lib/lib_lightgbm.dylib, 0x0006): Library not loaded: @rpath/libomp.dylib"
+}

@@ -1,0 +1,11 @@
+{
+  "days": 58,
+  "picks": 1097,
+  "avg_daily_return_pct": -0.2250792854496098,
+  "median_daily_return_pct": -0.5903697226719379,
+  "touch_limit_rate_pct": 3.7374658158614404,
+  "close_limit_rate_pct": 2.3701002734731085,
+  "win_rate_pct": 43.39106654512307,
+  "total_return_pct": -12.918901039326446,
+  "max_drawdown_pct": -17.713547213358392
+}

@@ -1,0 +1,11 @@
+akshare
+pandas
+numpy
+lightgbm
+scikit-learn
+apscheduler
+requests
+lxml
+beautifulsoup4
+tqdm
+loguru

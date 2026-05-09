@@ -1,0 +1,70 @@
+2026-05-10 02:13:04.785 | INFO     | stock_screener.main:run_minute_backtest:723 - 分钟级回测: 加载历史数据目录 /Users/aw/Documents/开发项目/stock-screener/stock_screener/stock-screener/data
+2026-05-10 02:13:36.054 | INFO     | stock_screener.main:run_minute_backtest:736 - 构建数据集: 101731 行
+2026-05-10 02:16:09.249 | INFO     | stock_screener.main:run_minute_backtest:723 - 分钟级回测: 加载历史数据目录 /Users/aw/Documents/开发项目/stock-screener/stock_screener/stock-screener/data
+2026-05-10 02:16:39.503 | INFO     | stock_screener.main:run_minute_backtest:736 - 构建数据集: 101731 行
+2026-05-10 02:17:00.834 | INFO     | stock_screener.main:run_backtest:690 - 加载历史数据目录: /Users/aw/Documents/开发项目/stock-screener/stock_screener/stock-screener/data
+2026-05-10 02:27:41.181 | INFO     | stock_screener.main:run_minute_backtest:723 - 分钟级回测: 加载历史数据目录 /Users/aw/Documents/开发项目/stock-screener/stock_screener/stock-screener/data
+2026-05-10 02:28:15.334 | INFO     | stock_screener.main:run_minute_backtest:736 - 构建数据集: 41071 行
+2026-05-10 02:48:44.098 | INFO     | stock_screener.main:scan_stocks:451 - ============================================================
+2026-05-10 02:48:44.098 | INFO     | stock_screener.main:scan_stocks:452 - 🚀 A股尾盘涨停扫描器 启动
+2026-05-10 02:48:44.098 | INFO     | stock_screener.main:scan_stocks:453 - 扫描时间: 2026-05-10 02:48:44
+2026-05-10 02:48:44.098 | INFO     | stock_screener.main:scan_stocks:454 - ============================================================
+2026-05-10 02:48:44.099 | INFO     | stock_screener.main:get_all_realtime:197 - 正在获取全市场实时数据...
+2026-05-10 02:48:44.109 | INFO     | stock_screener.main:get_all_realtime:210 - 实时缓存已过期: 2026-04-30 20:18:22，缓存年龄 801022s，重新拉取
+2026-05-10 02:48:44.109 | INFO     | stock_screener.main:get_all_realtime:221 - 尝试从东方财富获取实时行情(1/3)...
+2026-05-10 02:48:49.170 | WARNING  | stock_screener.main:get_all_realtime:230 - 东方财富实时行情获取失败(1/3): ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:48:51.173 | INFO     | stock_screener.main:get_all_realtime:221 - 尝试从东方财富获取实时行情(2/3)...
+2026-05-10 02:48:56.945 | WARNING  | stock_screener.main:get_all_realtime:230 - 东方财富实时行情获取失败(2/3): ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:48:58.947 | INFO     | stock_screener.main:get_all_realtime:221 - 尝试从东方财富获取实时行情(3/3)...
+2026-05-10 02:49:04.890 | WARNING  | stock_screener.main:get_all_realtime:230 - 东方财富实时行情获取失败(3/3): ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:06.896 | INFO     | stock_screener.main:get_all_realtime:221 - 尝试从新浪获取实时行情(1/3)...
+2026-05-10 02:49:21.359 | WARNING  | stock_screener.main:get_all_realtime:230 - 新浪实时行情获取失败(1/3): ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:23.364 | INFO     | stock_screener.main:get_all_realtime:221 - 尝试从新浪获取实时行情(2/3)...
+2026-05-10 02:49:53.857 | INFO     | stock_screener.main:get_all_realtime:225 - 成功从新浪获取 5512 只股票实时数据
+2026-05-10 02:49:53.887 | INFO     | stock_screener.main:scan_stocks:465 - 获取到 5512 只股票
+2026-05-10 02:49:53.887 | INFO     | stock_screener.main:scan_stocks:468 - 本次行情数据源: 新浪，采集时间: 2026-05-10 02:49:53
+2026-05-10 02:49:53.937 | INFO     | stock_screener.main:scan_stocks:479 - 虚拟盘复盘完成: 结算 35 条，未结算 0 条
+2026-05-10 02:49:53.939 | INFO     | stock_screener.main:scan_stocks:489 - 排除ST后: 5246 只
+2026-05-10 02:49:53.941 | INFO     | stock_screener.main:scan_stocks:493 - 排除科创板/创业板/北交所后: 2999 只
+2026-05-10 02:49:53.941 | INFO     | stock_screener.main:scan_stocks:498 - 价格过滤(3-50元): 2674 只
+2026-05-10 02:49:53.941 | INFO     | stock_screener.main:scan_stocks:505 - 排除涨跌停后: 2558 只
+2026-05-10 02:49:53.943 | INFO     | stock_screener.main:scan_stocks:521 - 实时预筛后仅处理前 500/2558 只，避免历史接口过载
+2026-05-10 02:49:54.033 | WARNING  | stock_screener.main:get_history:265 - 获取 000697 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:54.195 | WARNING  | stock_screener.main:get_history:265 - 获取 603030 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:54.384 | WARNING  | stock_screener.main:get_history:265 - 获取 601003 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:54.564 | WARNING  | stock_screener.main:get_history:265 - 获取 001312 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:54.757 | WARNING  | stock_screener.main:get_history:265 - 获取 002134 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:54.955 | WARNING  | stock_screener.main:get_history:265 - 获取 000545 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:55.111 | WARNING  | stock_screener.main:get_history:265 - 获取 603031 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:55.291 | WARNING  | stock_screener.main:get_history:265 - 获取 600988 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:55.485 | WARNING  | stock_screener.main:get_history:265 - 获取 000997 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:55.728 | WARNING  | stock_screener.main:get_history:265 - 获取 600396 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:55.908 | WARNING  | stock_screener.main:get_history:265 - 获取 603358 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:56.098 | WARNING  | stock_screener.main:get_history:265 - 获取 600184 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:56.259 | WARNING  | stock_screener.main:get_history:265 - 获取 603284 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:56.453 | WARNING  | stock_screener.main:get_history:265 - 获取 601868 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:56.460 | INFO     | stock_screener.main:scan_stocks:563 - 已处理 200/500 (40%)
+2026-05-10 02:49:56.644 | WARNING  | stock_screener.main:get_history:265 - 获取 002892 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:56.863 | WARNING  | stock_screener.main:get_history:265 - 获取 001220 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:57.039 | WARNING  | stock_screener.main:get_history:265 - 获取 000565 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:57.262 | WARNING  | stock_screener.main:get_history:265 - 获取 002331 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:57.477 | WARNING  | stock_screener.main:get_history:265 - 获取 000716 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:57.633 | WARNING  | stock_screener.main:get_history:265 - 获取 002225 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:57.803 | WARNING  | stock_screener.main:get_history:265 - 获取 000560 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:57.978 | WARNING  | stock_screener.main:get_history:265 - 获取 600397 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:57.984 | INFO     | stock_screener.main:scan_stocks:563 - 已处理 400/500 (80%)
+2026-05-10 02:49:58.167 | WARNING  | stock_screener.main:get_history:265 - 获取 000593 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:58.351 | WARNING  | stock_screener.main:get_history:265 - 获取 003035 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:58.527 | WARNING  | stock_screener.main:get_history:265 - 获取 002705 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:58.692 | WARNING  | stock_screener.main:get_history:265 - 获取 600816 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:58.878 | WARNING  | stock_screener.main:get_history:265 - 获取 002324 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:49:59.039 | WARNING  | stock_screener.main:get_history:265 - 获取 002915 历史数据失败: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-10 02:50:55.487 | INFO     | stock_screener.main:scan_stocks:585 - 自适应评分已启用: 已复盘样本 106 条，正样本 34 条
+2026-05-10 02:50:55.487 | INFO     | stock_screener.main:scan_stocks:595 - 开始二次增强: 对 Top 50 候选做同花顺/腾讯验证
+2026-05-10 02:53:01.089 | INFO     | stock_screener.main:scan_stocks:605 - 二次增强完成: 同花顺源 ['同花顺量价齐升:1823', '同花顺连续上涨:1635', '同花顺突破5日线:3916']，腾讯分笔检查 20 只
+2026-05-10 02:53:01.090 | INFO     | stock_screener.main:scan_stocks:614 - 
+2026-05-10 02:53:01.090 | INFO     | stock_screener.main:scan_stocks:615 - ============================================================
+2026-05-10 02:53:01.090 | INFO     | stock_screener.main:scan_stocks:616 - ⭐ 扫描完成！Top 20 候选股（评分越高越有潜力）
+2026-05-10 02:53:01.090 | INFO     | stock_screener.main:scan_stocks:617 - ============================================================
+2026-05-10 02:53:01.094 | INFO     | stock_screener.main:scan_stocks:646 - 完整结果已保存到: /Users/aw/Documents/开发项目/stock-screener/stock_screener/results_20260510_025301.csv
+2026-05-10 02:53:01.110 | INFO     | stock_screener.main:scan_stocks:654 - 虚拟盘记录新增 20 条: /Users/aw/Documents/开发项目/stock-screener/stock_screener/paper/paper_trades.csv

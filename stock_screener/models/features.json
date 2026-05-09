@@ -1,0 +1,17 @@
+[
+  "change_pct",
+  "amplitude",
+  "turnover_rate",
+  "volume_ratio_5",
+  "volume_ratio_10",
+  "turnover_ratio_5",
+  "ma5_dev",
+  "ma10_dev",
+  "ma20_dev",
+  "return_3d",
+  "return_5d",
+  "return_10d",
+  "volatility_10d",
+  "price_position_10d",
+  "ma_bull_aligned"
+]

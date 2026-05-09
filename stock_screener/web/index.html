@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A股尾盘涨停扫描器</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-icon">📈</div>
+      <div class="logo-text">
+        <h1>尾盘涨停扫描器</h1>
+        <span>Limit-Up Scanner v2</span>
+      </div>
+    </div>
+    <nav>
+      <a href="#" class="nav-item active" data-tab="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <span>仪表盘</span>
+      </a>
+      <a href="#" class="nav-item" data-tab="candidates">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/></svg>
+        <span>候选股</span>
+      </a>
+      <a href="#" class="nav-item" data-tab="backtest">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg>
+        <span>回测</span>
+      </a>
+      <a href="#" class="nav-item" data-tab="paper">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg>
+        <span>虚拟盘</span>
+      </a>
+      <a href="#" class="nav-item" data-tab="model">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+        <span>模型</span>
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div id="scanStatus" class="scan-status idle">
+        <span class="status-dot"></span>
+        <span class="status-text">就绪</span>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main-content">
+    <header class="top-bar">
+      <h2 id="pageTitle">仪表盘</h2>
+      <div class="top-actions">
+        <button id="scanBtn" class="btn btn-primary" onclick="runScan()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <span>开始扫描</span>
+        </button>
+      </div>
+    </header>
+
+    <div id="dashboard" class="tab-content active">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon blue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+          </div>
+          <div class="stat-info">
+            <span class="stat-label">候选股数量</span>
+            <span class="stat-value" id="statCandidates">--</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23,6 13.5,15.5 8.5,10.5 1,18"/><polyline points="17,6 23,6 23,12"/></svg>
+          </div>
+          <div class="stat-info">
+            <span class="stat-label">次日高开率</span>
+            <span class="stat-value" id="statOpenRate">--</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon purple">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
+          </div>
+          <div class="stat-info">
+            <span class="stat-label">平均开盘收益</span>
+            <span class="stat-value" id="statAvgReturn">--</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon orange">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          </div>
+          <div class="stat-info">
+            <span class="stat-label">累计收益</span>
+            <span class="stat-value" id="statTotalReturn">--</span>
+          </div>
+        </div>
+      </div>
+      <div class="chart-row">
+        <div class="card">
+          <h3>收益曲线</h3>
+          <canvas id="equityChart" height="200"></canvas>
+        </div>
+        <div class="card">
+          <h3>候选分布</h3>
+          <canvas id="scoreDistChart" height="200"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <h3>最新候选</h3>
+        <div class="table-wrapper">
+          <table id="latestTable">
+            <thead><tr><th>代码</th><th>名称</th><th>评分</th><th>涨跌幅</th><th>量比</th><th>5日涨幅</th><th>尾盘30min</th></tr></thead>
+            <tbody id="latestTableBody"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="candidates" class="tab-content">
+      <div class="card">
+        <h3>全部候选股</h3>
+        <div class="table-wrapper">
+          <table id="allCandidatesTable">
+            <thead><tr><th>日期</th><th>代码</th><th>名称</th><th>收盘价</th><th>涨跌幅</th><th>换手率</th><th>评分</th><th>次日开盘收益</th></tr></thead>
+            <tbody id="allCandidatesBody"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="backtest" class="tab-content">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg></div>
+          <div class="stat-info"><span class="stat-label">回测天数</span><span class="stat-value" id="btDays">--</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22,4 12,14.01 9,11.01"/></svg></div>
+          <div class="stat-info"><span class="stat-label">次日高开率</span><span class="stat-value" id="btOpenRate">--</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg></div>
+          <div class="stat-info"><span class="stat-label">最大回撤</span><span class="stat-value" id="btDrawdown">--</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></div>
+          <div class="stat-info"><span class="stat-label">累计收益</span><span class="stat-value" id="btTotalReturn">--</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>回测明细</h3>
+        <div class="table-wrapper">
+          <table id="backtestTable">
+            <thead><tr><th>日期</th><th>候选数</th><th>平均分</th><th>次日高开率</th><th>开盘胜率</th><th>平均收益</th></tr></thead>
+            <tbody id="backtestBody"><tr><td colspan="6" class="empty">点击「分钟级回测」按钮开始</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="paper" class="tab-content">
+      <div class="card">
+        <h3>虚拟盘台账</h3>
+        <div class="table-wrapper">
+          <table id="paperTable">
+            <thead><tr><th>扫描时间</th><th>代码</th><th>名称</th><th>买入价</th><th>卖出价</th><th>收益率</th><th>状态</th></tr></thead>
+            <tbody id="paperBody"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="model" class="tab-content">
+      <div class="card">
+        <h3>模型状态</h3>
+        <div id="modelInfo" class="model-info">
+          <p class="empty">暂无训练数据</p>
+        </div>
+      </div>
+      <div class="card">
+        <h3>特征重要性</h3>
+        <div id="featureImportance" class="feature-chart">
+          <p class="empty">训练模型后显示</p>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

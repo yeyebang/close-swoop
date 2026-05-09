@@ -1,0 +1,31 @@
+{
+    "scan_hour": 14,
+    "scan_minute": 0,
+    "target_stock_codes": [],
+    "backtrack_days": 60,
+    "max_history_fetch": 500,
+    "realtime_cache_ttl_seconds": 120,
+    "enrichment": {
+        "enabled": true,
+        "candidate_count": 50,
+        "ths_enabled": true,
+        "tencent_tick_enabled": true,
+        "tencent_tick_count": 20,
+        "max_bonus": 20
+    },
+    "data_dir": "data",
+    "log_dir": "logs",
+    "top_n": 20,
+    "ollama_model": "qwen3.6:35b-a3b-q8_0",
+    "paper": {
+        "enabled": true,
+        "success_return_pct": 1.0,
+        "adaptive_min_samples": 30
+    },
+    "filters": {
+        "min_volume": 10000,
+        "max_price": 50,
+        "min_price": 3,
+        "exclude_st": true
+    }
+}
