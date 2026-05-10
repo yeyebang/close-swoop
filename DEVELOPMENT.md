@@ -573,4 +573,32 @@ A: 回测使用日K数据代理，标签是"次日开盘收益率"而非"涨停"
 
 ---
 
+## 十四、部署状态
+
+### 2026-05-10 部署进度
+
+#### 已完成
+- ✅ GitHub 仓库创建：**yeyebang/close-swoop**（公开仓库）
+- ✅ 代码已 push 到远程仓库
+- ✅ 仓库命名：**close-swoop**（尾盘突袭）
+
+#### 待部署（服务器：116.62.230.151，OpenCloudOS 9，宝塔面板）
+- [ ] 克隆代码到服务器：`git clone https://github.com/yeyebang/close-swoop.git`
+- [ ] 安装 Python 依赖：`pip install -r requirements.txt`
+- [ ] 配置 Qwen API Key（替代 Ollama）：
+  - 环境变量 `QWEN_API_KEY`
+  - 修改 `ollama_advisor.py` 和 `ui_server.py` 中的 API 调用逻辑
+- [ ] 启动 Web UI：`python run.py ui 0.0.0.0 3002`
+- [ ] 使用 systemd 或 supervisor 保持进程运行
+- [ ] Cloudflare 域名解析：`gupiao.nicetalking.site` → `116.62.230.151`
+- [ ] Nginx 反向代理：`gupiao.nicetalking.site` → `localhost:3002`
+
+#### SSH 连接问题
+- 服务器 SSH 端口 22 开放且安全组已放行
+- 本地 SSH 连接在密钥交换阶段被服务器关闭（kex_exchange_identification: Connection closed）
+- 原因待排查：可能是服务器 sshd 配置限制或 IP 被安全软件拦截
+- 替代方案：通过网页终端操作部署
+
+---
+
 **文档结束**
