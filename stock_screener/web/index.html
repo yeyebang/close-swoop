@@ -187,6 +187,30 @@
     </div>
   </main>
 </div>
+
+<div id="scanModal" class="scan-modal">
+  <div class="scan-modal-overlay" onclick="closeScanModal()"></div>
+  <div class="scan-modal-content">
+    <div class="scan-modal-header">
+      <h3>扫描进度</h3>
+      <button class="scan-modal-close" onclick="closeScanModal()">×</button>
+    </div>
+    <div class="scan-modal-body">
+      <div class="scan-phase-row">
+        <span class="scan-phase-label">阶段</span>
+        <span id="scanPhaseText" class="scan-phase-value">准备中…</span>
+      </div>
+      <div class="scan-progress-track">
+        <div id="scanProgressBar" class="scan-progress-bar" style="width: 0%"></div>
+      </div>
+      <div class="scan-log-section">
+        <span class="scan-log-title">扫描日志</span>
+        <div id="scanLogArea" class="scan-log-area"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script src="/app.js"></script>
 </body>
 </html>

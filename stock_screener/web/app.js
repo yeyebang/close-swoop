@@ -52,20 +52,60 @@ async function runScan() {
   btn.disabled = true;
   btn.querySelector('span').textContent = '扫描中...';
   updateScanStatus('running', '扫描中...');
+  openScanModal();
   try {
     await fetch('/api/scan/run', { method: 'POST', body: '{}' });
     pollScanStatus();
-  } catch (e) {
+   } catch (e) {
     btn.disabled = false;
     btn.querySelector('span').textContent = '开始扫描';
     updateScanStatus('failed', '扫描失败');
-  }
+    closeScanModal();
+   }
 }
 
 function updateScanStatus(state, text) {
   const el = document.getElementById('scanStatus');
   el.className = `scan-status ${state}`;
   el.querySelector('.status-text').textContent = text;
+}
+
+function openScanModal() {
+  const modal = document.getElementById('scanModal');
+  modal.classList.add('visible');
+  document.getElementById('scanPhaseText').textContent = '准备中...';
+  document.getElementById('scanProgressBar').style.width = '0%';
+  document.getElementById('scanProgressBar').classList.remove('indeterminate');
+  document.getElementById('scanLogArea').innerHTML = '';
+}
+
+function closeScanModal() {
+  const modal = document.getElementById('scanModal');
+  modal.classList.remove('visible');
+}
+
+function updateScanModal(status) {
+  const phaseText = document.getElementById('scanPhaseText');
+  const progressBar = document.getElementById('scanProgressBar');
+  const logArea = document.getElementById('scanLogArea');
+
+  const phase = status.scan_phase || '扫描中';
+  phaseText.textContent = phase;
+
+  // Log entries
+  const logs = status.scan_log || [];
+  let logHtml = '';
+  logs.forEach(function(line) {
+    let cls = 'log-entry';
+    if (line.includes('完成') || line.includes('新增')) cls += ' success';
+    if (line.includes('失败') || line.includes('错误') || line.includes('Exception')) cls += ' error';
+    logHtml += '<div class="' + cls + '">' + line + '</div>';
+  });
+  logArea.innerHTML = logHtml;
+  logArea.scrollTop = logArea.scrollHeight;
+
+  // Indeterminate progress animation during scan
+  progressBar.classList.add('indeterminate');
 }
 
 async function pollScanStatus() {
@@ -75,17 +115,25 @@ async function pollScanStatus() {
       const btn = document.getElementById('scanBtn');
       btn.disabled = false;
       btn.querySelector('span').textContent = '开始扫描';
+      const progressBar = document.getElementById('scanProgressBar');
+      progressBar.classList.remove('indeterminate');
       if (status.scan_phase === 'completed') {
         updateScanStatus('completed', '扫描完成');
-      } else {
+        document.getElementById('scanPhaseText').textContent = '扫描完成';
+        progressBar.style.width = '100%';
+        setTimeout(closeScanModal, 1500);
+       } else {
         updateScanStatus('failed', status.scan_error || '失败');
-      }
+        document.getElementById('scanPhaseText').textContent = '扫描失败';
+        progressBar.style.width = '100%';
+       }
       loadDashboard();
       return;
-    }
+     }
     updateScanStatus('running', status.scan_phase || '扫描中');
+    updateScanModal(status);
     setTimeout(check, 2000);
-  };
+   };
   check();
 }
 
