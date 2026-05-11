@@ -33,6 +33,17 @@ document.querySelectorAll('.nav-item').forEach(el => {
   });
 });
 
+
+// Mobile bottom nav
+document.querySelectorAll('.bottom-nav-item').forEach(el => {
+  el.addEventListener('click', () => {
+    const tab = el.dataset.tab;
+    switchTab(tab);
+    document.querySelectorAll('.bottom-nav-item').forEach(n => n.classList.remove('active'));
+    el.classList.add('active');
+    });
+});
+
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));

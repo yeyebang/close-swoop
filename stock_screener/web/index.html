@@ -188,6 +188,29 @@
   </main>
 </div>
 
+<nav class="bottom-nav">
+   <button class="bottom-nav-item active" data-tab="dashboard">
+     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+     <span>仪表盘</span>
+   </button>
+   <button class="bottom-nav-item" data-tab="candidates">
+     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 14l2 2 4-4"/></svg>
+     <span>候选股</span>
+   </button>
+   <button class="bottom-nav-item" data-tab="backtest">
+     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg>
+     <span>回测</span>
+   </button>
+   <button class="bottom-nav-item" data-tab="paper">
+     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg>
+     <span>虚拟盘</span>
+   </button>
+   <button class="bottom-nav-item" data-tab="model">
+     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+     <span>模型</span>
+   </button>
+</nav>
+
 <div id="scanModal" class="scan-modal">
   <div class="scan-modal-overlay" onclick="closeScanModal()"></div>
   <div class="scan-modal-content">
