@@ -36,7 +36,7 @@ FEATURE_COLUMNS = [
 
 TEXT_COLUMNS = {
     "signal_date", "scan_time", "code", "name", "exit_plan", "planned_exit_date",
-    "status", "enrich_notes", "data_source", "market_captured_at", "settle_time",
+    "status", "enrich_notes", "v3_notes", "data_source", "market_captured_at", "settle_time",
 }
 
 
