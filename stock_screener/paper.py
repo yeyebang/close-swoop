@@ -399,7 +399,8 @@ def _coerce_training_frame(df: pd.DataFrame) -> pd.DataFrame:
     for col in FEATURE_COLUMNS + ["success"]:
         out[col] = pd.to_numeric(out[col], errors="coerce")
     out["signal_dt"] = pd.to_datetime(out.get("signal_date"), errors="coerce")
-    return out.replace([np.inf, -np.inf], np.nan).dropna(subset=FEATURE_COLUMNS + ["success"])
+    out[FEATURE_COLUMNS + ["success"]] = out[FEATURE_COLUMNS + ["success"]].replace([np.inf, -np.inf], np.nan)
+    return out.dropna(subset=FEATURE_COLUMNS + ["success"])
 
 
 def _recent_training_frame(settled: pd.DataFrame, recent_days: int) -> pd.DataFrame:

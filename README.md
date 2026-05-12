@@ -48,7 +48,7 @@ python run.py ui
 - **规则评分** — 主观经验评分，快速筛选
 - **ML 模型排序** — LightGBM 学习特征权重，预测次日高开概率
 - **二次增强** — 同花顺/腾讯分笔数据验证
-- **虚拟盘跟踪** — 自我迭代，自适应评分
+- **V3复盘自修正** — 真实扫描信号次日标记成功/失败，并反向修正后续评分
 
 ### 回测系统
 
@@ -159,7 +159,10 @@ stock-screener/
 | `backtrack_days` | 历史数据天数 | 60 |
 | `filters.min_price` | 最低价格 | 3 |
 | `filters.max_price` | 最高价格 | 50 |
-| `paper.adaptive_min_samples` | 自适应评分最小样本 | 30 |
+| `paper.adaptive_min_samples` | V3复盘模型最小样本 | 30 |
+| `paper.v3_recent_days` | V3近期复盘窗口 | 60 |
+| `paper.v3_recent_weight` | V3近期模型权重 | 0.6 |
+| `paper.v3_model_weight` | V3修正模型权重 | 0.35 |
 
 ---
 

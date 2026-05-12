@@ -780,16 +780,23 @@ def scan_stocks(config):
         df_results, adaptive_info = apply_adaptive_scores(
             df_results,
             min_samples=int(paper_cfg.get("adaptive_min_samples", 30)),
+            recent_days=int(paper_cfg.get("v3_recent_days", 60)),
+            recent_weight=float(paper_cfg.get("v3_recent_weight", 0.6)),
+            model_weight=float(paper_cfg.get("v3_model_weight", 0.35)),
         )
     sort_col = "final_score" if "final_score" in df_results.columns else "score"
     df_results = df_results.sort_values(sort_col, ascending=False).reset_index(drop=True)
     if adaptive_info.get("adaptive_enabled"):
         logger.info(
-            f"自适应评分已启用: 已复盘样本 {adaptive_info['settled_samples']} 条，"
-            f"正样本 {adaptive_info.get('positive_samples', 0)} 条"
+            f"V3复盘修正已启用: 已复盘样本 {adaptive_info['settled_samples']} 条，"
+            f"正样本 {adaptive_info.get('positive_samples', 0)} 条，"
+            f"风险规则 {adaptive_info.get('risk_rule_count', 0)} 条"
         )
     else:
-        logger.info(f"自适应评分未启用: 已复盘样本 {adaptive_info.get('settled_samples', 0)} 条，先使用规则分")
+        logger.info(
+            f"V3复盘修正未启用: 已复盘样本 {adaptive_info.get('settled_samples', 0)} 条，"
+            f"原因: {adaptive_info.get('reason', '样本不足')}，先使用规则分"
+        )
 
     enrichment_cfg = config.get("enrichment", {})
     if enrichment_cfg.get("enabled", True):
@@ -837,7 +844,9 @@ def scan_stocks(config):
         print(f"   评分: {row['score']}/105 ({row['score_pct']}%)  "
               f"量比MA5: {row['vol_vs_ma5']}  MA5偏离: {row['ma5_dev%']}%")
         if pd.notna(row.get("adaptive_score", pd.NA)):
-            print(f"   自适应分: {row['adaptive_score']:.1f}/105  最终分: {row['final_score']:.1f}/105")
+            print(f"   V3修正分: {row['adaptive_score']:.1f}/105  最终分: {row['final_score']:.1f}/105")
+        if row.get("v3_notes", ""):
+            print(f"   V3提示: {row.get('v3_notes', '')}")
         if row.get("enrich_score", 0):
             print(f"   增强分: +{row['enrich_score']:.1f}  {row.get('enrich_notes', '')}")
         print()

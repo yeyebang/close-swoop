@@ -22,7 +22,10 @@
     "paper": {
         "enabled": true,
         "success_return_pct": 1.0,
-        "adaptive_min_samples": 30
+        "adaptive_min_samples": 30,
+        "v3_recent_days": 60,
+        "v3_recent_weight": 0.6,
+        "v3_model_weight": 0.35
     },
     "filters": {
         "min_volume": 10000,
