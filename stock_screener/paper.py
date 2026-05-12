@@ -31,6 +31,11 @@ FEATURE_COLUMNS = [
     "rule_score",
 ]
 
+TEXT_COLUMNS = {
+    "signal_date", "scan_time", "code", "name", "exit_plan", "planned_exit_date",
+    "status", "enrich_notes", "data_source", "market_captured_at", "settle_time",
+}
+
 
 def normalize_code(code) -> str:
     text = "".join(ch for ch in str(code).strip() if ch.isdigit())
@@ -44,8 +49,9 @@ def load_ledger() -> pd.DataFrame:
     df = pd.read_csv(LEDGER_PATH, dtype={"code": str})
     if df.empty:
         return _empty_ledger()
+    df = _ensure_ledger_schema(df)
     df["code"] = df["code"].map(normalize_code)
-    for col in ["signal_date", "scan_time", "code", "name", "status", "enrich_notes", "data_source", "market_captured_at", "settle_time"]:
+    for col in TEXT_COLUMNS:
         if col in df.columns:
             df[col] = df[col].astype("object")
     return df
@@ -59,6 +65,7 @@ def save_ledger(df: pd.DataFrame) -> None:
 def _empty_ledger() -> pd.DataFrame:
     cols = [
         "signal_date", "scan_time", "rank", "code", "name", "scan_price",
+        "exit_plan", "planned_exit_date",
         "scan_change_pct", "scan_volume_ratio", "scan_turnover_rate",
         "scan_amplitude", "scan_vol_vs_ma5", "scan_ma5_dev", "rule_score",
         "rule_score_pct", "adaptive_score", "final_score", "status",
@@ -67,6 +74,15 @@ def _empty_ledger() -> pd.DataFrame:
         "hit_limit_up", "next_exit_price", "next_return_pct", "success",
     ]
     return pd.DataFrame(columns=cols)
+
+
+def _ensure_ledger_schema(df: pd.DataFrame) -> pd.DataFrame:
+    template = _empty_ledger()
+    out = df.copy()
+    for col in template.columns:
+        if col not in out.columns:
+            out[col] = "" if col in TEXT_COLUMNS else np.nan
+    return out
 
 
 def append_signals(df_top: pd.DataFrame, scan_time: pd.Timestamp | None = None) -> int:
@@ -92,7 +108,9 @@ def append_signals(df_top: pd.DataFrame, scan_time: pd.Timestamp | None = None) 
             "rank": rank,
             "code": code,
             "name": row.get("名称", ""),
-            "scan_price": row.get("最新价", np.nan),
+            "scan_price": row.get("买入价", row.get("最新价", np.nan)),
+            "exit_plan": "next_open",
+            "planned_exit_date": "",
             "scan_change_pct": row.get("涨跌幅%", np.nan),
             "scan_volume_ratio": row.get("量比", np.nan),
             "scan_turnover_rate": row.get("换手率%", np.nan),
@@ -128,8 +146,9 @@ def append_signals(df_top: pd.DataFrame, scan_time: pd.Timestamp | None = None) 
 def settle_pending(realtime_df: pd.DataFrame, data_dir: Path, success_return_pct: float = 1.0) -> dict:
     """Settle open paper trades from previous scan days.
 
-    At the next scan, current realtime price is used as a practical paper exit
-    proxy. Same-day close and limit-up outcome are read from cached daily bars.
+    Signals represent an afternoon buy and a next-session-open exit. Settlement
+    therefore uses the first available trading day's open after the signal date.
+    If that daily bar is not available yet, the signal remains open.
     """
     ledger = load_ledger()
     if ledger.empty or "status" not in ledger.columns:
@@ -141,12 +160,8 @@ def settle_pending(realtime_df: pd.DataFrame, data_dir: Path, success_return_pct
     if not open_mask.any():
         return {"settled": 0, "open": int((ledger["status"] == "open").sum()), "path": str(LEDGER_PATH)}
 
-    realtime = realtime_df.copy()
-    if "code" in realtime.columns:
-        realtime["code"] = realtime["code"].map(normalize_code)
-        realtime = realtime.set_index("code", drop=False)
-
     settled = 0
+    waiting = 0
     for idx in ledger[open_mask].index:
         code = normalize_code(ledger.at[idx, "code"])
         scan_price = pd.to_numeric(ledger.at[idx, "scan_price"], errors="coerce")
@@ -166,18 +181,24 @@ def settle_pending(realtime_df: pd.DataFrame, data_dir: Path, success_return_pct
                 hit_limit = bool(float(day_row.iloc[-1].get("涨跌幅", 0)) >= _limit_threshold(code))
 
         exit_price = np.nan
-        if code in realtime.index:
-            exit_price = pd.to_numeric(realtime.at[code, "last_price"], errors="coerce")
-        if not np.isfinite(exit_price) and not hist.empty:
+        exit_date = ""
+        if not hist.empty:
             later = hist[hist["日期"].astype(str) > signal_date]
             if not later.empty:
-                exit_price = float(later.iloc[0]["开盘"])
+                exit_row = later.iloc[0]
+                exit_price = float(exit_row["开盘"])
+                exit_date = str(exit_row["日期"])[:10]
+        if not np.isfinite(exit_price):
+            waiting += 1
+            continue
 
         next_return = (exit_price / scan_price - 1) * 100 if np.isfinite(exit_price) else np.nan
         success = bool(hit_limit or (np.isfinite(next_return) and next_return >= success_return_pct))
 
         ledger.at[idx, "status"] = "settled"
         ledger.at[idx, "settle_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
+        if "planned_exit_date" in ledger.columns:
+            ledger.at[idx, "planned_exit_date"] = exit_date
         ledger.at[idx, "same_day_close"] = same_day_close
         ledger.at[idx, "same_day_return_pct"] = same_day_return
         ledger.at[idx, "hit_limit_up"] = int(hit_limit)
@@ -187,7 +208,12 @@ def settle_pending(realtime_df: pd.DataFrame, data_dir: Path, success_return_pct
         settled += 1
 
     save_ledger(ledger)
-    return {"settled": settled, "open": int((ledger["status"] == "open").sum()), "path": str(LEDGER_PATH)}
+    return {
+        "settled": settled,
+        "open": int((ledger["status"] == "open").sum()),
+        "waiting_for_next_open": waiting,
+        "path": str(LEDGER_PATH),
+    }
 
 
 def apply_adaptive_scores(df_results: pd.DataFrame, min_samples: int = 30) -> tuple[pd.DataFrame, dict]:

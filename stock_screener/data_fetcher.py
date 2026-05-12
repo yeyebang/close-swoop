@@ -23,6 +23,53 @@ try:
 except ImportError:
     ak = None
 
+# =====================================================================
+# 全局注入 requests.Session，解决东方财富/新浪 API 频繁断连问题
+# =====================================================================
+# akshare 底层使用 requests，macOS 上东方财富会频繁关闭空闲连接
+# 通过 monkey-patch requests.Session 来添加 retry adapter
+_imported_requests = False
+
+
+def _inject_resilient_session():
+    """在模块加载时注入带有重试机制的 requests Session。"""
+    global _imported_requests
+    if _imported_requests:
+        return
+    try:
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=1.0,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=10,
+            pool_maxsize=10,
+        )
+        session = requests.Session()
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        # Monkey-patch the default session used by requests
+        requests.sessions.get_adapter = lambda self, url: adapter  # type: ignore
+        # Also patch the module-level default session
+        requests.adapters.DEFAULT_ADAPTER = adapter  # type: ignore
+
+        _imported_requests = True
+        logger.info("已注入弹性 requests Session（5次重试，指数退避）")
+    except Exception as e:
+        logger.warning(f"注入弹性 Session 失败: {e}（将使用默认 requests 配置）")
+
+
+_inject_resilient_session()
+
 
 # ==================== 配置 ====================
 

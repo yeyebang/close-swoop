@@ -5,6 +5,8 @@
     "backtrack_days": 60,
     "max_history_fetch": 500,
     "realtime_cache_ttl_seconds": 120,
+    "history_primary_max_attempts": 1,
+    "history_primary_failure_threshold": 5,
     "enrichment": {
         "enabled": true,
         "candidate_count": 50,

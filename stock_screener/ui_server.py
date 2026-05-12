@@ -41,6 +41,13 @@ SERVER_STATE: dict[str, Any] = {
     "scan_returncode": None,
     "scan_phase": "idle",
     "scan_log": [],
+    "backtest_running": False,
+    "backtest_started_at": None,
+    "backtest_finished_at": None,
+    "backtest_error": None,
+    "backtest_returncode": None,
+    "backtest_phase": "idle",
+    "backtest_log": [],
 }
 
 
@@ -68,6 +75,13 @@ class UiHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=500)
 
+    def do_HEAD(self) -> None:
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
+
     def do_POST(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -83,6 +97,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 self._send_json(handle_ollama_analyze(payload))
             elif parsed.path == "/api/scan/run":
                 self._send_json(start_scan())
+            elif parsed.path == "/api/backtest/run":
+                self._send_json(start_backtest(payload))
             else:
                 self._send_json({"error": "未知接口"}, status=404)
         except Exception as exc:
@@ -105,6 +121,10 @@ class UiHandler(BaseHTTPRequestHandler):
             self._send_json(get_ollama_models())
         elif path == "/api/scan/status":
             self._send_json(SERVER_STATE)
+        elif path == "/api/backtest/status":
+            self._send_json(backtest_state())
+        elif path == "/api/backtest/report":
+            self._send_json(get_backtest_report(query))
         elif path == "/api/minute-backtest":
             self._send_json(get_minute_backtest())
         else:
@@ -116,7 +136,8 @@ class UiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
-        self.wfile.write(raw)
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(raw)
 
     def _send_file(self, path: Path) -> None:
         if not path.exists() or not path.is_file():
@@ -128,7 +149,8 @@ class UiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
-        self.wfile.write(raw)
+        if not getattr(self, "_head_only", False):
+            self.wfile.write(raw)
 
 
 def first(query: dict[str, list[str]], key: str, default: str) -> str:
@@ -143,8 +165,10 @@ def get_summary() -> dict[str, Any]:
     all_df = read_csv(latest_all, limit=100000) if latest_all else pd.DataFrame()
     config = load_json(CONFIG_FILE)
     metrics = load_json(REPORT_DIR / "minute_backtest_metrics.json")
+    backtest_mode = "minute"
     if not metrics:
         metrics = load_json(REPORT_DIR / "backtest_metrics.json")
+        backtest_mode = "daily" if metrics else ""
     model_metrics = load_json(MODEL_DIR / "metrics.json")
 
     paper = paper_report()
@@ -162,8 +186,10 @@ def get_summary() -> dict[str, Any]:
         "marketCapturedAt": captured_at,
         "config": config,
         "backtest": metrics,
+        "backtestMode": backtest_mode,
         "model": model_metrics,
         "paper": paper,
+        "scoreBuckets": score_buckets(all_df, score_col),
         "scanState": SERVER_STATE,
     }
 
@@ -181,14 +207,18 @@ def get_results(query: dict[str, list[str]]) -> dict[str, Any]:
     elif scope == "paper":
         path = PAPER_LEDGER
     elif scope == "backtest":
-        path = REPORT_DIR / "backtest_picks.csv"
+        mode = first(query, "mode", "daily")
+        path = REPORT_DIR / ("minute_backtest_picks.csv" if mode == "minute" else "backtest_picks.csv")
     else:
         path = latest_file("results_all_*.csv")
 
     if not path or not path.exists():
         return {"file": None, "rows": [], "columns": []}
 
-    df = read_csv(path, limit=limit)
+    df = read_csv(path, limit=None)
+    df = sort_result_frame(df, scope)
+    if limit:
+        df = df.head(limit)
     rows = dataframe_records(df)
     return {"file": file_info(path), "rows": rows, "columns": list(df.columns)}
 
@@ -271,7 +301,7 @@ def start_scan() -> dict[str, Any]:
             assert proc.stdout is not None
             for line in proc.stdout:
                 append_scan_log(line.rstrip())
-            proc.wait(timeout=30)
+            proc.wait(timeout=600)
             SERVER_STATE["scan_returncode"] = proc.returncode
             if proc.returncode != 0:
                 SERVER_STATE["scan_error"] = "\n".join(SERVER_STATE["scan_log"][-30:])
@@ -287,6 +317,67 @@ def start_scan() -> dict[str, Any]:
 
     threading.Thread(target=worker, daemon=True).start()
     return {"started": True, "message": "扫描已开始", "state": SERVER_STATE}
+
+
+def start_backtest(payload: dict[str, Any]) -> dict[str, Any]:
+    if SERVER_STATE["backtest_running"]:
+        return {"started": False, "message": "回测已在运行", "state": backtest_state()}
+
+    mode = str(payload.get("mode") or "daily").strip()
+    if mode not in {"daily", "minute"}:
+        mode = "daily"
+    command = "minute-backtest" if mode == "minute" else "backtest"
+
+    def worker() -> None:
+        SERVER_STATE.update({
+            "backtest_running": True,
+            "backtest_started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "backtest_finished_at": None,
+            "backtest_error": None,
+            "backtest_returncode": None,
+            "backtest_phase": "running",
+            "backtest_log": [],
+        })
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, str(ROOT_DIR / "run.py"), command],
+                cwd=str(ROOT_DIR),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                append_backtest_log(line.rstrip())
+            proc.wait(timeout=900)
+            SERVER_STATE["backtest_returncode"] = proc.returncode
+            if proc.returncode != 0:
+                SERVER_STATE["backtest_error"] = "\n".join(SERVER_STATE["backtest_log"][-30:])
+                SERVER_STATE["backtest_phase"] = "failed"
+            else:
+                SERVER_STATE["backtest_phase"] = "completed"
+        except Exception as exc:
+            SERVER_STATE["backtest_error"] = str(exc)
+            SERVER_STATE["backtest_phase"] = "failed"
+        finally:
+            SERVER_STATE["backtest_running"] = False
+            SERVER_STATE["backtest_finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"started": True, "message": "回测已开始", "state": backtest_state()}
+
+
+def backtest_state() -> dict[str, Any]:
+    return {key: SERVER_STATE[key] for key in [
+        "backtest_running",
+        "backtest_started_at",
+        "backtest_finished_at",
+        "backtest_error",
+        "backtest_returncode",
+        "backtest_phase",
+        "backtest_log",
+    ]}
 
 
 def append_scan_log(line: str) -> None:
@@ -310,6 +401,18 @@ def append_scan_log(line: str) -> None:
         if marker in line:
             SERVER_STATE["scan_phase"] = phase
             break
+
+
+def append_backtest_log(line: str) -> None:
+    if not line:
+        return
+    logs = SERVER_STATE.setdefault("backtest_log", [])
+    logs.append(line)
+    del logs[:-120]
+    if "无法回测" in line or "ERROR" in line:
+        SERVER_STATE["backtest_phase"] = "failed"
+    elif "候选明细" in line or "指标报告" in line:
+        SERVER_STATE["backtest_phase"] = "completed"
 
 
 def candidate_rows_for_ollama(source: str, limit: int) -> list[dict[str, Any]]:
@@ -465,6 +568,75 @@ def get_minute_backtest() -> dict[str, Any]:
     else:
         rows = []
     return {"metrics": metrics, "rows": rows}
+
+
+def get_backtest_report(query: dict[str, list[str]]) -> dict[str, Any]:
+    mode = first(query, "mode", "minute")
+    if mode == "daily":
+        metrics_path = REPORT_DIR / "backtest_metrics.json"
+        picks_path = REPORT_DIR / "backtest_picks.csv"
+    else:
+        mode = "minute"
+        metrics_path = REPORT_DIR / "minute_backtest_metrics.json"
+        picks_path = REPORT_DIR / "minute_backtest_picks.csv"
+
+    metrics = load_json(metrics_path)
+    if picks_path.exists():
+        df = sort_result_frame(read_csv(picks_path, limit=None), "backtest").head(500)
+        rows = dataframe_records(df)
+        columns = list(df.columns)
+    else:
+        rows = []
+        columns = []
+
+    return {
+        "mode": mode,
+        "metrics": metrics,
+        "rows": rows,
+        "columns": columns,
+        "file": file_info(picks_path) if picks_path.exists() else None,
+        "metricsFile": file_info(metrics_path) if metrics_path.exists() else None,
+    }
+
+
+def sort_result_frame(df: pd.DataFrame, scope: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.copy()
+    if scope == "paper":
+        for col in ["scan_time", "扫描时间", "signal_date", "日期"]:
+            if col in out.columns:
+                out["_sort_time"] = pd.to_datetime(out[col], errors="coerce")
+                return out.sort_values("_sort_time", ascending=False).drop(columns=["_sort_time"])
+    if scope == "backtest":
+        for col in ["date", "日期"]:
+            if col in out.columns:
+                out["_sort_time"] = pd.to_datetime(out[col], errors="coerce")
+                return out.sort_values("_sort_time", ascending=False).drop(columns=["_sort_time"])
+    return out
+
+
+def score_buckets(df: pd.DataFrame, score_col: str) -> list[dict[str, Any]]:
+    buckets = [
+        ("高分(>80)", 80, float("inf"), "#22c55e"),
+        ("中上(60-80)", 60, 80, "#10b981"),
+        ("中等(40-60)", 40, 60, "#3b82f6"),
+        ("中下(20-40)", 20, 40, "#f59e0b"),
+        ("低分(<20)", float("-inf"), 20, "#ef4444"),
+    ]
+    if df.empty or score_col not in df.columns:
+        return [{"label": label, "value": 0, "color": color} for label, _, _, color in buckets]
+    scores = pd.to_numeric(df[score_col], errors="coerce")
+    data = []
+    for label, low, high, color in buckets:
+        if high == float("inf"):
+            count = int((scores > low).sum())
+        elif low == float("-inf"):
+            count = int((scores < high).sum())
+        else:
+            count = int(((scores >= low) & (scores <= high)).sum())
+        data.append({"label": label, "value": count, "color": color})
+    return data
 
 
 if __name__ == "__main__":

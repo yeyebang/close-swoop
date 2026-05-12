@@ -6,6 +6,7 @@ A股尾盘涨停扫描器
 规则评分 + 次日卖出策略
 """
 
+import concurrent
 import sys
 import os
 import json
@@ -17,6 +18,7 @@ from loguru import logger
 
 from stock_screener.research import (
     BacktestConfig,
+    LEGACY_DATA_DIR,
     backtest_rules,
     build_dataset,
     resolve_data_dir,
@@ -43,11 +45,27 @@ from stock_screener.paper import (
 )
 from stock_screener.enrichment import enrich_candidates
 
+# 触发 data_fetcher 模块加载，注入 resilient session（解决东方财富断连问题）
+import stock_screener.data_fetcher  # noqa: F401
+
 try:
     import akshare as ak
 except ImportError:
     print("需要安装 akshare，运行: pip install akshare")
     sys.exit(1)
+
+
+# ==================== 超时工具 ====================
+
+def ak_call(func, timeout=15, **kwargs):
+    """带超时的 akshare 调用，线程安全，兼容 macOS"""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(func, **kwargs)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise TimeoutError("akshare API 调用超时")
 
 
 # ==================== 配置 ====================
@@ -67,6 +85,8 @@ def load_config():
         "top_n": 10,
         "max_history_fetch": 500,
         "realtime_cache_ttl_seconds": 120,
+        "history_primary_max_attempts": 1,
+        "history_primary_failure_threshold": 5,
         "enrichment": {
             "enabled": True,
             "candidate_count": 50,
@@ -122,6 +142,14 @@ class DataFetcher:
         self.config = config
         self.data_dir = resolve_data_dir(config)
         self.data_dir.mkdir(exist_ok=True)
+        self.legacy_data_dir = LEGACY_DATA_DIR if LEGACY_DATA_DIR != self.data_dir and LEGACY_DATA_DIR.exists() else None
+        self.history_refresh_disabled = False
+        self.history_refresh_failures = 0
+        self.history_primary_disabled = False
+        self.history_primary_failures = 0
+        logger.info(f"数据缓存目录: {self.data_dir}")
+        if self.legacy_data_dir:
+            logger.info(f"历史兼容缓存目录: {self.legacy_data_dir}")
 
     def _ensure_columns(self, df, source=None, refresh_captured_at=True):
         """统一列名映射"""
@@ -203,6 +231,14 @@ class DataFetcher:
             today_only=True,
             max_age_seconds=ttl_seconds,
         )
+        if cached_df.empty and self.legacy_data_dir is not None:
+            legacy_cached_df, legacy_cached_at, legacy_cache_age = self._read_realtime_cache(
+                self.legacy_data_dir / "realtime.csv",
+                today_only=True,
+                max_age_seconds=ttl_seconds,
+            )
+            if not legacy_cached_df.empty:
+                cached_df, cached_at, cache_age = legacy_cached_df, legacy_cached_at, legacy_cache_age
         if not cached_df.empty:
             logger.info(f"使用缓存的实时数据: {cached_at}，缓存年龄 {self._format_cache_age(cache_age)}，数据源 {cached_df['数据源'].iloc[0]}")
             return cached_df
@@ -210,27 +246,36 @@ class DataFetcher:
             logger.info(f"实时缓存已过期: {cached_at}，缓存年龄 {self._format_cache_age(cache_age)}，重新拉取")
 
         fetchers = [
-            ("东方财富", ak.stock_zh_a_spot_em),
-            ("新浪", ak.stock_zh_a_spot),
+            ("东方财富", ak.stock_zh_a_spot_em, 20),
+            ("新浪", ak.stock_zh_a_spot, 15),
         ]
 
         last_error = None
-        for source_name, fetch_func in fetchers:
+        for source_name, fetch_func, timeout in fetchers:
             for attempt in range(1, 4):
                 try:
                     logger.info(f"尝试从{source_name}获取实时行情({attempt}/3)...")
-                    df = fetch_func()
+                    df = ak_call(fetch_func, timeout=timeout)
                     df = self._ensure_columns(df, source=source_name)
                     if not df.empty:
                         logger.info(f"成功从{source_name}获取 {len(df)} 只股票实时数据")
                         df.to_csv(cache_file, index=False, encoding="utf-8-sig")
                         return df
+                except TimeoutError as e:
+                    last_error = e
+                    logger.warning(f"{source_name}实时行情获取超时({attempt}/3): {e}")
+                    time.sleep(1)
                 except Exception as e:
                     last_error = e
                     logger.warning(f"{source_name}实时行情获取失败({attempt}/3): {e}")
-                    time.sleep(2)
+                    time.sleep(1)
 
         stale_df, stale_at, stale_age = self._read_realtime_cache(cache_file, today_only=False)
+        if stale_df.empty and self.legacy_data_dir is not None:
+            stale_df, stale_at, stale_age = self._read_realtime_cache(
+                self.legacy_data_dir / "realtime.csv",
+                today_only=False,
+            )
         if not stale_df.empty:
             source = stale_df["数据源"].iloc[0] if "数据源" in stale_df.columns else "unknown"
             logger.error(f"实时行情接口全部失败，使用最近缓存: {stale_at}，缓存年龄 {self._format_cache_age(stale_age)}，数据源 {source}。注意：这不是当前实时行情，只能应急参考。")
@@ -245,25 +290,174 @@ class DataFetcher:
         cache_file = self.data_dir / f"history_{code}.csv"
         end_date = datetime.now().strftime("%Y%m%d")
         start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+        max_cache_age_days = int(self.config.get("max_history_cache_age_days", 7))
+        cached_df, cached_path = self._read_history_cache(code)
 
-        if cache_file.exists():
-            try:
-                df = pd.read_csv(cache_file)
-                if len(df) >= 5:
-                    return df
-            except:
-                pass
+        if len(cached_df) >= 5 and self._history_cache_is_fresh(cached_df, max_cache_age_days):
+            return cached_df
+        if len(cached_df) >= 5:
+            last_date = self._last_history_date(cached_df)
+            logger.info(f"{code} 历史缓存较旧({last_date})，尝试刷新")
 
-        try:
-            df = ak.stock_zh_a_hist(symbol=code, period="daily",
-                                    start_date=start_date, end_date=end_date,
-                                    adjust="qfq")
-            if not df.empty:
-                df.to_csv(cache_file, index=False, encoding="utf-8-sig")
-            return df
-        except Exception as e:
-            logger.warning(f"获取 {code} 历史数据失败: {e}")
+        if self.history_refresh_disabled:
+            if len(cached_df) >= 5:
+                logger.debug(f"{code} 历史接口本轮已熔断，使用缓存: {cached_path}")
+                return cached_df
+            logger.debug(f"{code} 历史接口本轮已熔断，且无可用缓存")
             return pd.DataFrame()
+
+        last_error = None
+        if not self.history_primary_disabled:
+            attempts = max(1, int(self.config.get("history_primary_max_attempts", 1)))
+            for attempt in range(1, attempts + 1):
+                try:
+                    logger.debug(f"获取 {code} 东方财富历史数据({attempt}/{attempts})...")
+                    df = ak_call(ak.stock_zh_a_hist, timeout=12, symbol=code, period="daily",
+                                 start_date=start_date, end_date=end_date, adjust="qfq")
+                    if not df.empty:
+                        df = self._ensure_history_columns(df)
+                        df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+                        logger.debug(f"获取 {code} 历史数据成功: 东方财富 {len(df)} 行")
+                        self.history_primary_failures = 0
+                        self.history_refresh_failures = 0
+                        return df
+                    last_error = f"{code} 东方财富返回空数据"
+                except TimeoutError as e:
+                    last_error = e
+                    logger.info(f"{code} 东方财富历史源超时，改用新浪备用源")
+                except Exception as e:
+                    last_error = e
+                    logger.info(f"{code} 东方财富历史源断开，改用新浪备用源")
+                if attempt < attempts:
+                    time.sleep(0.5)
+            self._record_history_primary_failure(last_error)
+        else:
+            logger.debug(f"{code} 东方财富历史源本轮已暂停，直接使用新浪备用源")
+
+        fallback = self._fetch_history_from_sina(code, start_date, end_date)
+        if not fallback.empty:
+            fallback.to_csv(cache_file, index=False, encoding="utf-8-sig")
+            logger.info(f"获取 {code} 历史数据成功: 新浪备用源 {len(fallback)} 行")
+            self.history_refresh_failures = 0
+            return fallback
+
+        self._record_history_refresh_failure()
+        if len(cached_df) >= 5:
+            last_date = self._last_history_date(cached_df)
+            logger.warning(f"获取 {code} 历史数据全部失败，使用旧缓存({last_date}): {last_error}")
+            return cached_df
+
+        logger.warning(f"获取 {code} 历史数据全部失败，无法参与本轮评分: {last_error}")
+        return pd.DataFrame()
+
+    def _read_history_cache(self, code):
+        paths = [self.data_dir / f"history_{code}.csv"]
+        if self.legacy_data_dir is not None:
+            legacy_path = self.legacy_data_dir / f"history_{code}.csv"
+            if legacy_path not in paths:
+                paths.append(legacy_path)
+        for path in paths:
+            if not path.exists():
+                continue
+            try:
+                df = pd.read_csv(path)
+                if len(df) >= 5:
+                    return df, path
+            except Exception as e:
+                logger.warning(f"读取 {code} 历史缓存失败 [{path}]: {e}")
+        return pd.DataFrame(), None
+
+    def _record_history_refresh_failure(self):
+        self.history_refresh_failures += 1
+        threshold = int(self.config.get("history_refresh_failure_threshold", 3))
+        if self.history_refresh_failures >= threshold and not self.history_refresh_disabled:
+            self.history_refresh_disabled = True
+            logger.error(
+                f"历史行情接口连续失败 {self.history_refresh_failures} 只，本轮停止刷新历史数据，"
+                "后续股票只使用本地缓存，避免扫描被外部接口拖垮"
+            )
+
+    def _record_history_primary_failure(self, last_error):
+        self.history_primary_failures += 1
+        threshold = int(self.config.get("history_primary_failure_threshold", 5))
+        if self.history_primary_failures >= threshold and not self.history_primary_disabled:
+            self.history_primary_disabled = True
+            logger.info(
+                f"东方财富历史源连续断开 {self.history_primary_failures} 只，本轮扫描改用新浪历史源。"
+                f"最近一次原因: {last_error}"
+            )
+
+    @staticmethod
+    def _last_history_date(df):
+        if df.empty:
+            return None
+        for col in ["日期", "date"]:
+            if col in df.columns:
+                values = pd.to_datetime(df[col], errors="coerce").dropna()
+                if not values.empty:
+                    return values.max().date()
+        return None
+
+    def _history_cache_is_fresh(self, df, max_age_days):
+        last_date = self._last_history_date(df)
+        if last_date is None:
+            return False
+        return (datetime.now().date() - last_date).days <= max_age_days
+
+    @staticmethod
+    def _daily_symbol(code):
+        if code.startswith("6"):
+            return f"sh{code}"
+        if code.startswith(("0", "2", "3")):
+            return f"sz{code}"
+        if code.startswith(("4", "8", "9")):
+            return f"bj{code}"
+        return code
+
+    def _fetch_history_from_sina(self, code, start_date, end_date):
+        try:
+            df = ak_call(
+                ak.stock_zh_a_daily,
+                timeout=15,
+                symbol=self._daily_symbol(code),
+                start_date=start_date,
+                end_date=end_date,
+                adjust="qfq",
+            )
+            if df is None or df.empty:
+                return pd.DataFrame()
+            return self._ensure_history_columns(df)
+        except Exception as e:
+            logger.warning(f"获取 {code} 新浪历史数据失败: {e}")
+            return pd.DataFrame()
+
+    @staticmethod
+    def _ensure_history_columns(df):
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.copy()
+        if isinstance(df.index, pd.DatetimeIndex) and "date" not in df.columns and "日期" not in df.columns:
+            df = df.reset_index().rename(columns={"index": "date"})
+        col_map = {
+            "date": "日期",
+            "open": "开盘",
+            "close": "收盘",
+            "high": "最高",
+            "low": "最低",
+            "volume": "成交量",
+            "amount": "成交额",
+            "outstanding_share": "流通股本",
+            "turnover": "换手率",
+        }
+        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+        if "日期" in df.columns:
+            df["日期"] = pd.to_datetime(df["日期"], errors="coerce").dt.strftime("%Y-%m-%d")
+        if "换手率" not in df.columns:
+            df["换手率"] = 0
+        for col in ["开盘", "收盘", "最高", "最低", "成交量", "成交额", "换手率"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        return df
 
 
 # ==================== 特征工程 ====================
@@ -448,9 +642,10 @@ def calc_score(features, stock_row):
 
 def scan_stocks(config):
     """执行完整的扫描流程"""
+    scan_time = pd.Timestamp.now()
     logger.info("=" * 60)
     logger.info("🚀 A股尾盘涨停扫描器 启动")
-    logger.info(f"扫描时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"扫描时间: {scan_time.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
     fetcher = DataFetcher(config)
@@ -542,9 +737,12 @@ def scan_stocks(config):
             pct = int(s / max_s * 100)
 
             results.append({
+                "信号时间": scan_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "代码": code,
                 "名称": str(stock.get("name", "")),
                 "最新价": round(float(stock.get("last_price", 0)), 2),
+                "买入价": round(float(stock.get("last_price", 0)), 2),
+                "计划卖出": "次日开盘",
                 "涨跌幅%": round(float(stock.get("change_pct", 0)), 2),
                 "量比": round(float(stock.get("volume_ratio", 0)), 2),
                 "换手率%": round(float(stock.get("turnover_rate", 0)), 2),
@@ -563,8 +761,12 @@ def scan_stocks(config):
                 logger.info(f"已处理 {i}/{total} ({i / total * 100:.0f}%)")
 
         except Exception as e:
-            if i % 200 == 0:
-                logger.warning(f"处理 {code} 异常: {e}")
+            # 记录前5个错误以便排查，之后每200个记录一次避免日志刷屏
+            if not hasattr(scan_stocks, "_error_count"):
+                scan_stocks._error_count = 0  # type: ignore
+            scan_stocks._error_count += 1  # type: ignore
+            if scan_stocks._error_count <= 5 or i % 200 == 0:  # type: ignore
+                logger.warning(f"处理 {code} 异常 ({scan_stocks._error_count}): {e}")  # type: ignore
             continue
 
     if not results:
@@ -641,16 +843,16 @@ def scan_stocks(config):
         print()
 
     # --- Step 5: 保存CSV ---
-    csv_path = BASE_DIR / f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    csv_path = BASE_DIR / f"results_{scan_time.strftime('%Y%m%d_%H%M%S')}.csv"
     df_top.to_csv(csv_path, index=False, encoding="utf-8-sig")
     logger.info(f"完整结果已保存到: {csv_path}")
 
     # 也存个完整版
-    df_results.to_csv(BASE_DIR / f"results_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+    df_results.to_csv(BASE_DIR / f"results_all_{scan_time.strftime('%Y%m%d_%H%M%S')}.csv",
                       index=False, encoding="utf-8-sig")
 
     if paper_cfg.get("enabled", True):
-        added = append_signals(df_top, pd.Timestamp.now())
+        added = append_signals(df_top, scan_time)
         logger.info(f"虚拟盘记录新增 {added} 条: {BASE_DIR / 'paper' / 'paper_trades.csv'}")
 
     return df_results

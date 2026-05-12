@@ -148,12 +148,23 @@
           <div class="stat-info"><span class="stat-label">累计收益</span><span class="stat-value" id="btTotalReturn">--</span></div>
         </div>
       </div>
+      <div class="section-toolbar">
+        <button id="backtestBtn" class="btn btn-primary" onclick="runBacktest('daily')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg>
+          <span>旧日线回测</span>
+        </button>
+        <button id="minuteBacktestBtn" class="btn btn-secondary" onclick="runBacktest('minute')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <span>隔夜代理回测</span>
+        </button>
+        <span id="backtestRunStatus" class="toolbar-status">读取已有回测报告</span>
+      </div>
       <div class="card">
         <h3>回测明细</h3>
         <div class="table-wrapper">
           <table id="backtestTable">
             <thead><tr><th>日期</th><th>候选数</th><th>平均分</th><th>次日高开率</th><th>开盘胜率</th><th>平均收益</th></tr></thead>
-            <tbody id="backtestBody"><tr><td colspan="6" class="empty">点击「分钟级回测」按钮开始</td></tr></tbody>
+            <tbody id="backtestBody"><tr><td colspan="6" class="empty">点击「隔夜代理回测」按钮开始</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -161,10 +172,10 @@
 
     <div id="paper" class="tab-content">
       <div class="card">
-        <h3>虚拟盘台账</h3>
+        <h3>扫描信号跟踪</h3>
         <div class="table-wrapper">
           <table id="paperTable">
-            <thead><tr><th>扫描时间</th><th>代码</th><th>名称</th><th>买入价</th><th>卖出价</th><th>收益率</th><th>状态</th></tr></thead>
+            <thead><tr><th>扫描时间</th><th>代码</th><th>名称</th><th>观察价</th><th>退出价</th><th>收益率</th><th>状态</th></tr></thead>
             <tbody id="paperBody"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody>
           </table>
         </div>

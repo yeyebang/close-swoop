@@ -8,6 +8,7 @@ signals, but they are not reliable enough to block the main scan.
 
 from __future__ import annotations
 
+import concurrent
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -19,6 +20,19 @@ try:
     import akshare as ak
 except ImportError:  # pragma: no cover
     ak = None
+
+
+def _ak_call(func, timeout=10, **kwargs):
+    """带超时的 akshare 调用（enrichment 专用，线程安全）"""
+    if ak is None:
+        return None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(func, **kwargs)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise TimeoutError("enrichment API 调用超时")
 
 
 def normalize_code(code) -> str:
@@ -88,10 +102,16 @@ def fetch_ths_signal_codes() -> tuple[dict[str, set[str]], list[str]]:
 
     for source_name, func in sources:
         try:
-            df = func()
+            if callable(func):
+                df = _ak_call(func, timeout=12)
+            else:
+                df = func
             codes = _extract_codes(df)
             signal_codes[source_name] = codes
             loaded.append(f"{source_name}:{len(codes)}")
+        except TimeoutError:
+            logger.warning(f"{source_name}获取超时")
+            signal_codes[source_name] = set()
         except Exception as e:
             logger.warning(f"{source_name}获取失败: {e}")
             signal_codes[source_name] = set()
@@ -110,11 +130,14 @@ def fetch_hot_concept_codes(limit: int = 5) -> set[str]:
     infer hot concepts safely, this function returns an empty set.
     """
     try:
-        concept_df = ak.stock_board_concept_name_ths()
+        concept_df = _ak_call(ak.stock_board_concept_name_ths, timeout=12)
+    except TimeoutError:
+        logger.warning(f"同花顺概念列表获取超时")
+        return set()
     except Exception as e:
         logger.warning(f"同花顺概念列表获取失败: {e}")
         return set()
-    if concept_df.empty:
+    if concept_df is None or concept_df.empty:
         return set()
 
     name_col = _find_column(concept_df, ["概念名称", "板块", "名称", "name"])
@@ -130,8 +153,11 @@ def fetch_hot_concept_codes(limit: int = 5) -> set[str]:
     codes: set[str] = set()
     for name in concepts[name_col].dropna().astype(str).head(limit):
         try:
-            info_df = ak.stock_board_concept_info_ths(symbol=name)
-            codes.update(_extract_codes(info_df))
+            info_df = _ak_call(ak.stock_board_concept_info_ths, timeout=10, symbol=name)
+            if info_df is not None and not info_df.empty:
+                codes.update(_extract_codes(info_df))
+        except TimeoutError:
+            logger.warning(f"同花顺概念成分获取超时({name})")
         except Exception as e:
             logger.warning(f"同花顺概念成分获取失败({name}): {e}")
     return codes
@@ -140,7 +166,12 @@ def fetch_hot_concept_codes(limit: int = 5) -> set[str]:
 def fetch_tencent_tick_score(code: str) -> tuple[float, str]:
     symbol = _tencent_symbol(code)
     try:
-        df = ak.stock_zh_a_tick_tx_js(symbol=symbol)
+        df = _ak_call(ak.stock_zh_a_tick_tx_js, timeout=10, symbol=symbol)
+        if df is None:
+            return 0.0, ""
+    except TimeoutError:
+        logger.warning(f"腾讯分笔获取超时({code})")
+        return 0.0, ""
     except Exception as e:
         logger.warning(f"腾讯分笔获取失败({code}): {e}")
         return 0.0, ""
@@ -242,4 +273,3 @@ def _tencent_symbol(code: str) -> str:
     if code.startswith(("5", "6", "9")):
         return f"sh{code}"
     return f"sz{code}"
-

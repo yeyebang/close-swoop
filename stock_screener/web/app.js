@@ -1,5 +1,6 @@
 let currentTab = 'dashboard';
 let summaryData = null;
+let currentBacktestMode = 'minute';
 
 const tabTitles = {
   dashboard: '仪表盘',
@@ -14,22 +15,7 @@ document.querySelectorAll('.nav-item').forEach(el => {
     e.preventDefault();
     const tab = el.dataset.tab;
     switchTab(tab);
-    if (tab === 'candidates' && !document.getElementById('allCandidatesBody').dataset.loaded) {
-      loadAllCandidates();
-      document.getElementById('allCandidatesBody').dataset.loaded = 'true';
-    }
-    if (tab === 'backtest' && !document.getElementById('backtestBody').dataset.loaded) {
-      loadBacktest();
-      document.getElementById('backtestBody').dataset.loaded = 'true';
-    }
-    if (tab === 'paper' && !document.getElementById('paperBody').dataset.loaded) {
-      loadPaper();
-      document.getElementById('paperBody').dataset.loaded = 'true';
-    }
-    if (tab === 'model' && !document.getElementById('modelInfo').dataset.loaded) {
-      loadModel();
-      document.getElementById('modelInfo').dataset.loaded = 'true';
-    }
+    loadTabData(tab);
   });
 });
 
@@ -39,10 +25,30 @@ document.querySelectorAll('.bottom-nav-item').forEach(el => {
   el.addEventListener('click', () => {
     const tab = el.dataset.tab;
     switchTab(tab);
+    loadTabData(tab);
     document.querySelectorAll('.bottom-nav-item').forEach(n => n.classList.remove('active'));
     el.classList.add('active');
     });
 });
+
+function loadTabData(tab) {
+  if (tab === 'candidates' && !document.getElementById('allCandidatesBody').dataset.loaded) {
+    loadAllCandidates();
+    document.getElementById('allCandidatesBody').dataset.loaded = 'true';
+  }
+  if (tab === 'backtest' && !document.getElementById('backtestBody').dataset.loaded) {
+    loadBacktest();
+    document.getElementById('backtestBody').dataset.loaded = 'true';
+  }
+  if (tab === 'paper' && !document.getElementById('paperBody').dataset.loaded) {
+    loadPaper();
+    document.getElementById('paperBody').dataset.loaded = 'true';
+  }
+  if (tab === 'model' && !document.getElementById('modelInfo').dataset.loaded) {
+    loadModel();
+    document.getElementById('modelInfo').dataset.loaded = 'true';
+  }
+}
 
 function switchTab(tab) {
   currentTab = tab;
@@ -51,6 +57,9 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   document.getElementById(tab).classList.add('active');
   document.getElementById('pageTitle').textContent = tabTitles[tab] || tab;
+  if (tab === 'dashboard') {
+    requestAnimationFrame(renderDashboardCharts);
+  }
 }
 
 async function apiGet(path) {
@@ -139,6 +148,7 @@ async function pollScanStatus() {
         progressBar.style.width = '100%';
        }
       loadDashboard();
+      refreshCurrentTab();
       return;
      }
     updateScanStatus('running', status.scan_phase || '扫描中');
@@ -146,6 +156,57 @@ async function pollScanStatus() {
     setTimeout(check, 2000);
    };
   check();
+}
+
+async function runBacktest(mode) {
+  currentBacktestMode = mode === 'daily' ? 'daily' : 'minute';
+  const btn = document.getElementById(mode === 'minute' ? 'minuteBacktestBtn' : 'backtestBtn');
+  const statusEl = document.getElementById('backtestRunStatus');
+  document.getElementById('backtestBtn').disabled = true;
+  document.getElementById('minuteBacktestBtn').disabled = true;
+  btn.querySelector('span').textContent = mode === 'minute' ? '隔夜代理回测中...' : '旧日线回测中...';
+  statusEl.textContent = '回测运行中...';
+  try {
+    await fetch('/api/backtest/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode })
+    });
+    pollBacktestStatus(mode);
+  } catch (e) {
+    resetBacktestButtons();
+    statusEl.textContent = '回测启动失败';
+  }
+}
+
+async function pollBacktestStatus(mode) {
+  const statusEl = document.getElementById('backtestRunStatus');
+  const check = async () => {
+    const status = await apiGet('/api/backtest/status');
+    if (!status.backtest_running) {
+      resetBacktestButtons();
+      if (status.backtest_phase === 'completed') {
+        statusEl.textContent = '回测完成';
+        loadBacktest();
+      } else {
+        statusEl.textContent = status.backtest_error || '回测失败';
+      }
+      return;
+    }
+    const logs = status.backtest_log || [];
+    statusEl.textContent = logs.length ? logs[logs.length - 1] : (mode === 'minute' ? '分钟级回测运行中...' : '回测运行中...');
+    setTimeout(check, 2000);
+  };
+  check();
+}
+
+function resetBacktestButtons() {
+  const dailyBtn = document.getElementById('backtestBtn');
+  const minuteBtn = document.getElementById('minuteBacktestBtn');
+  dailyBtn.disabled = false;
+  minuteBtn.disabled = false;
+  dailyBtn.querySelector('span').textContent = '旧日线回测';
+  minuteBtn.querySelector('span').textContent = '隔夜代理回测';
 }
 
 async function loadDashboard() {
@@ -171,8 +232,7 @@ async function loadDashboard() {
   totalEl.className = `stat-value ${totalReturn >= 0 ? 'positive' : 'negative'}`;
 
   loadLatestCandidates();
-  drawEquityChart(bt);
-  drawScoreChart(s);
+  requestAnimationFrame(renderDashboardCharts);
 }
 
 async function loadLatestCandidates() {
@@ -183,7 +243,7 @@ async function loadLatestCandidates() {
     return;
   }
   tbody.innerHTML = data.rows.map(r => {
-    const chg = r['涨跌幅'] || r['change_pct'] || 0;
+    const chg = r['涨跌幅%'] ?? r['涨跌幅'] ?? r['change_pct'] ?? 0;
     const cls = chg >= 0 ? 'change-positive' : 'change-negative';
     const score = r['final_score'] || r['score'] || r['ml_score'] || '--';
     return `<tr>
@@ -199,33 +259,55 @@ async function loadLatestCandidates() {
 }
 
 async function loadAllCandidates() {
-  const data = await apiGet('/api/results?scope=backtest&limit=200');
+  const data = await apiGet('/api/results?scope=all&limit=500');
   const tbody = document.getElementById('allCandidatesBody');
   if (!data.rows || data.rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无数据</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无数据</td></tr>';
     return;
   }
   tbody.innerHTML = data.rows.map(r => {
-    const chg = r['change_pct'] || r['涨跌幅'] || 0;
-    const ret = r['next_day_open_return'] || 0;
+    const chg = r['涨跌幅%'] ?? r['change_pct'] ?? r['涨跌幅'] ?? 0;
+    const ret = r['next_day_open_return'] ?? r['次日开盘收益'] ?? '';
     const cls = chg >= 0 ? 'change-positive' : 'change-negative';
-    const retCls = ret >= 0 ? 'change-positive' : 'change-negative';
+    const retNum = parseFloat(ret);
+    const retText = Number.isFinite(retNum) ? retNum.toFixed(2) + '%' : '--';
+    const retCls = Number.isFinite(retNum) && retNum >= 0 ? 'change-positive' : 'change-negative';
+    const score = r['final_score'] ?? r['score'] ?? '--';
     return `<tr>
-      <td>${r['date'] || ''}</td>
-      <td>${r['code'] || ''}</td>
-      <td>${r['name'] || ''}</td>
-      <td>${r['price'] || '--'}</td>
+      <td>${r['行情采集时间'] || r['date'] || ''}</td>
+      <td>${r['代码'] || r['code'] || ''}</td>
+      <td>${r['名称'] || r['name'] || ''}</td>
+      <td>${r['最新价'] || r['price'] || '--'}</td>
       <td class="${cls}">${parseFloat(chg).toFixed(2)}%</td>
-      <td>${r['turnover_rate_daily'] || '--'}</td>
-      <td><strong>${r['score'] || '--'}</strong></td>
-      <td class="${retCls}">${parseFloat(ret).toFixed(2)}%</td>
+      <td>${r['换手率%'] ?? r['turnover_rate_daily'] ?? '--'}</td>
+      <td><strong>${score}</strong></td>
+      <td class="${retCls}">${retText}</td>
     </tr>`;
   }).join('');
 }
 
+function refreshCurrentTab() {
+  if (currentTab === 'candidates') {
+    document.getElementById('allCandidatesBody').dataset.loaded = 'true';
+    loadAllCandidates();
+  }
+  if (currentTab === 'backtest') {
+    document.getElementById('backtestBody').dataset.loaded = 'true';
+    loadBacktest();
+  }
+  if (currentTab === 'paper') {
+    document.getElementById('paperBody').dataset.loaded = 'true';
+    loadPaper();
+  }
+}
+
 async function loadBacktest() {
-  const data = await apiGet('/api/summary');
-  const bt = data.backtest || {};
+  const data = await apiGet(`/api/backtest/report?mode=${currentBacktestMode}`);
+  const bt = data.metrics || {};
+  const statusEl = document.getElementById('backtestRunStatus');
+  statusEl.textContent = currentBacktestMode === 'minute'
+    ? '当前展示：隔夜代理回测（现有日线数据，非真实14:00分钟价）'
+    : '当前展示：旧日线回测';
   document.getElementById('btDays').textContent = bt.days || '--';
   const openRate = bt.strong_open_rate_pct ?? bt.touch_limit_rate_pct ?? null;
   const openEl = document.getElementById('btOpenRate');
@@ -238,7 +320,7 @@ async function loadBacktest() {
   totalEl.textContent = (bt.total_return_pct || 0).toFixed(2) + '%';
   totalEl.className = `stat-value ${(bt.total_return_pct || 0) >= 0 ? 'positive' : 'negative'}`;
 
-  const picksData = await apiGet('/api/results?scope=backtest&limit=500');
+  const picksData = data;
   const tbody = document.getElementById('backtestBody');
   if (!picksData.rows || picksData.rows.length === 0) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty">请先运行回测</td></tr>';
@@ -248,13 +330,14 @@ async function loadBacktest() {
   picksData.rows.forEach(r => {
     const d = r['date'] || '未知';
     if (!byDate[d]) byDate[d] = { codes: [], scores: [], strongOpens: [], returns: [] };
-    byDate[d].codes.push(r['code']);
+    const ret = parseFloat(r['next_day_open_return'] ?? r['next_open_return'] ?? 0) || 0;
+    byDate[d].codes.push(r['code'] || r['代码'] || '');
     byDate[d].scores.push(parseFloat(r['score']) || 0);
-    byDate[d].strongOpens.push(parseInt(r['is_strong_open']) || 0);
-    byDate[d].returns.push(parseFloat(r['next_day_open_return']) || 0);
+    byDate[d].strongOpens.push(parseInt(r['is_strong_open'] ?? (ret > 0.5 ? 1 : 0)) || 0);
+    byDate[d].returns.push(ret);
   });
 
-  tbody.innerHTML = Object.entries(byDate).map(([date, data]) => {
+  tbody.innerHTML = Object.entries(byDate).sort(([a], [b]) => String(b).localeCompare(String(a))).map(([date, data]) => {
     const openRate = (data.strongOpens.filter(x => x).length / data.strongOpens.length * 100).toFixed(1);
     const winRate = (data.returns.filter(x => x > 0).length / data.returns.length * 100).toFixed(1);
     const avgRet = (data.returns.reduce((a, b) => a + b, 0) / data.returns.length).toFixed(3);
@@ -280,19 +363,30 @@ async function loadPaper() {
     tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无虚拟盘记录</td></tr>';
     return;
   }
-  tbody.innerHTML = data.rows.slice(0, 50).map(r => {
-    const ret = parseFloat(r['收益率'] || r['return_pct'] || 0);
-    const cls = ret >= 0 ? 'change-positive' : 'change-negative';
+  const rows = data.rows.slice().sort((a, b) => {
+    const at = Date.parse(a['scan_time'] || a['扫描时间'] || a['日期'] || '') || 0;
+    const bt = Date.parse(b['scan_time'] || b['扫描时间'] || b['日期'] || '') || 0;
+    return bt - at;
+  });
+  tbody.innerHTML = rows.slice(0, 50).map(r => {
+    const retRaw = r['next_return_pct'] ?? r['收益率'] ?? r['return_pct'];
+    const ret = parseFloat(retRaw);
+    const hasRet = Number.isFinite(ret);
+    const cls = !hasRet || ret >= 0 ? 'change-positive' : 'change-negative';
     const status = r['状态'] || r['status'] || '';
-    const badgeCls = status.includes('成功') || status.includes('盈利') ? 'badge-success' : status.includes('亏损') ? 'badge-danger' : 'badge-warning';
+    const success = parseFloat(r['success']);
+    const badgeCls = status === 'settled'
+      ? (success === 1 ? 'badge-success' : 'badge-danger')
+      : 'badge-warning';
+    const statusText = status === 'settled' ? (success === 1 ? '已验证成功' : '已验证未达标') : '待下次扫描验证';
     return `<tr>
       <td>${r['scan_time'] || r['扫描时间'] || r['日期'] || ''}</td>
       <td>${r['code'] || r['代码'] || ''}</td>
       <td>${r['name'] || r['名称'] || ''}</td>
-      <td>${r['买入价'] || r['buy_price'] || '--'}</td>
-      <td>${r['卖出价'] || r['sell_price'] || '--'}</td>
-      <td class="${cls}">${ret.toFixed(2)}%</td>
-      <td><span class="badge ${badgeCls}">${status}</span></td>
+      <td>${r['scan_price'] ?? r['买入价'] ?? r['buy_price'] ?? '--'}</td>
+      <td>${r['next_exit_price'] ?? r['卖出价'] ?? r['sell_price'] ?? '--'}</td>
+      <td class="${cls}">${hasRet ? ret.toFixed(2) + '%' : '--'}</td>
+      <td><span class="badge ${badgeCls}">${statusText}</span></td>
     </tr>`;
   }).join('');
 }
@@ -322,15 +416,9 @@ async function loadModel() {
 
 function drawEquityChart(bt) {
   const canvas = document.getElementById('equityChart');
-  const ctx = canvas.getContext('2d');
-  const w = canvas.parentElement.clientWidth - 40;
-  const h = 200;
-  canvas.width = w * 2;
-  canvas.height = h * 2;
-  canvas.style.width = w + 'px';
-  canvas.style.height = h + 'px';
-  ctx.scale(2, 2);
-  ctx.clearRect(0, 0, w, h);
+  const prepared = prepareCanvas(canvas, 200);
+  if (!prepared) return;
+  const { ctx, w, h } = prepared;
 
   if (!bt.days) {
     ctx.fillStyle = '#64748b';
@@ -407,31 +495,25 @@ function drawEquityChart(bt) {
 
 function drawScoreChart(summary) {
   const canvas = document.getElementById('scoreDistChart');
-  const ctx = canvas.getContext('2d');
-  const w = canvas.parentElement.clientWidth - 40;
-  const h = 200;
-  canvas.width = w * 2;
-  canvas.height = h * 2;
-  canvas.style.width = w + 'px';
-  canvas.style.height = h + 'px';
-  ctx.scale(2, 2);
-  ctx.clearRect(0, 0, w, h);
+  const prepared = prepareCanvas(canvas, 200);
+  if (!prepared) return;
+  const { ctx, w, h } = prepared;
 
-  const mockData = [
-    { label: '高分(>80)', value: 15, color: '#22c55e' },
-    { label: '中上(60-80)', value: 35, color: '#10b981' },
-    { label: '中等(40-60)', value: 55, color: '#3b82f6' },
-    { label: '中下(20-40)', value: 25, color: '#f59e0b' },
-    { label: '低分(<20)', value: 10, color: '#ef4444' },
-  ];
-
-  const total = mockData.reduce((s, d) => s + d.value, 0);
-  const maxVal = Math.max(...mockData.map(d => d.value));
+  const data = Array.isArray(summary.scoreBuckets) ? summary.scoreBuckets : [];
+  const total = data.reduce((s, d) => s + Number(d.value || 0), 0);
+  if (!total) {
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('暂无真实评分分布', w / 2, h / 2);
+    return;
+  }
+  const maxVal = Math.max(...data.map(d => Number(d.value || 0)));
   const padL = 10, padR = 10, padT = 10, padB = 30;
   const barH = 28;
   const gap = 8;
 
-  mockData.forEach((d, i) => {
+  data.forEach((d, i) => {
     const y = padT + i * (barH + gap);
     const barW = (d.value / maxVal) * (w - padL - padR - 60);
 
@@ -449,6 +531,33 @@ function drawScoreChart(summary) {
     ctx.textAlign = 'left';
     ctx.fillText(`${d.value}`, padL + 55 + barW + 6, y + barH / 2 + 4);
   });
+}
+
+function prepareCanvas(canvas, height) {
+  const tab = canvas.closest('.tab-content');
+  if (tab && !tab.classList.contains('active')) return null;
+  const parent = canvas.parentElement;
+  const rect = parent.getBoundingClientRect();
+  if (!rect.width) return null;
+  const style = getComputedStyle(parent);
+  const padX = parseFloat(style.paddingLeft || 0) + parseFloat(style.paddingRight || 0);
+  const w = Math.max(260, Math.floor(rect.width - padX));
+  const h = height;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(w * dpr);
+  canvas.height = Math.floor(h * dpr);
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function renderDashboardCharts() {
+  if (!summaryData || currentTab !== 'dashboard') return;
+  drawEquityChart(summaryData.backtest || {});
+  drawScoreChart(summaryData);
 }
 
 function drawFeatureImportance(features) {
@@ -505,8 +614,5 @@ async function init() {
 
 window.addEventListener('load', init);
 window.addEventListener('resize', () => {
-  if (summaryData) {
-    drawEquityChart(summaryData.backtest || {});
-    drawScoreChart(summaryData);
-  }
+  requestAnimationFrame(renderDashboardCharts);
 });
