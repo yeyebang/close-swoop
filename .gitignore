@@ -2,3 +2,9 @@ stock_screener/stock-screener/data/
 stock_screener/reports/*.csv
 stock_screener/results_*.csv
 stock_screener/paper/paper_trades.csv
+
+# Runtime outputs
+deploy/
+stock_screener/logs/
+stock_screener/models/
+insurance.db
