@@ -12,8 +12,10 @@ import os
 import json
 import time
 import pandas as pd
+import requests as _requests
 from pathlib import Path
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger
 
 from stock_screener.research import (
@@ -220,22 +222,104 @@ class DataFetcher:
             logger.warning(f"读取实时缓存失败: {e}")
             return pd.DataFrame(), None, None
 
+    # ---- 腾讯直连行情 ----
+    _TX_FIELDS = {
+        "name": 1, "code": 2, "last_price": 3, "pre_close": 4,
+        "open_price": 5, "volume": 6, "change_amt": 31, "change_pct": 32,
+        "high": 33, "low": 34, "amount": 37, "turnover_rate": 38,
+        "amplitude": 43, "volume_ratio": 49,
+    }
+    _TX_HEADERS = {
+        "Referer": "https://finance.qq.com",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    }
+
+    @staticmethod
+    def _to_tx_prefix(code: str) -> str:
+        if code.startswith(("6", "9")):
+            return "sh" + code
+        if code.startswith(("4", "8")):
+            return "bj" + code
+        return "sz" + code
+
+    def _get_all_codes_tx(self) -> list:
+        cache_file = self.data_dir / "cache_all_codes.json"
+        if cache_file.exists():
+            try:
+                payload = json.loads(cache_file.read_text(encoding="utf-8"))
+                cached_at = datetime.fromisoformat(payload["cached_at"])
+                if (datetime.now() - cached_at).total_seconds() < 86400:
+                    return payload["codes"]
+            except Exception:
+                pass
+        try:
+            df = ak.stock_info_a_code_name()
+            codes = [self._to_tx_prefix(str(r).zfill(6)) for r in df["code"].tolist()]
+            cache_file.write_text(
+                json.dumps({"cached_at": datetime.now().isoformat(), "codes": codes}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return codes
+        except Exception as e:
+            logger.warning(f"获取股票代码列表失败: {e}")
+            return []
+
+    def _fetch_tencent_batch(self, batch: list) -> list:
+        url = "https://qt.gtimg.cn/q=" + ",".join(batch)
+        try:
+            resp = _requests.get(url, headers=self._TX_HEADERS, timeout=8)
+            resp.raise_for_status()
+        except Exception as e:
+            logger.debug(f"腾讯行情批次失败: {e}")
+            return []
+        rows = []
+        for line in resp.text.strip().split("\n"):
+            if "~" not in line or "=" not in line:
+                continue
+            try:
+                parts = line.split('"')[1].split("~")
+                if len(parts) < 50 or not parts[3]:
+                    continue
+                row = {col: parts[idx] if idx < len(parts) else "" for col, idx in self._TX_FIELDS.items()}
+                row["code"] = normalize_code(row["code"])
+                row["amount"] = float(row["amount"]) * 10000 if row["amount"] else 0.0
+                rows.append(row)
+            except Exception:
+                continue
+        return rows
+
+    def _fetch_tencent_realtime(self) -> pd.DataFrame:
+        codes = self._get_all_codes_tx()
+        if not codes:
+            return pd.DataFrame()
+        batches = [codes[i: i + 100] for i in range(0, len(codes), 100)]
+        all_rows = []
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            for rows in pool.map(self._fetch_tencent_batch, batches):
+                all_rows.extend(rows)
+        if not all_rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(all_rows)
+        for col in [c for c in df.columns if c not in ("name", "code")]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        df["name"] = df["name"].fillna("")
+        df["采集时间"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df["数据源"] = "腾讯"
+        logger.info(f"腾讯行情获取成功: {len(df)} 条")
+        return df
+
     def get_all_realtime(self):
-        """获取全市场实时行情"""
+        """获取全市场实时行情（腾讯直连优先，新浪备用）"""
         logger.info("正在获取全市场实时数据...")
         cache_file = self.data_dir / "realtime.csv"
         ttl_seconds = int(self.config.get("realtime_cache_ttl_seconds", 120))
 
         cached_df, cached_at, cache_age = self._read_realtime_cache(
-            cache_file,
-            today_only=True,
-            max_age_seconds=ttl_seconds,
+            cache_file, today_only=True, max_age_seconds=ttl_seconds,
         )
         if cached_df.empty and self.legacy_data_dir is not None:
             legacy_cached_df, legacy_cached_at, legacy_cache_age = self._read_realtime_cache(
-                self.legacy_data_dir / "realtime.csv",
-                today_only=True,
-                max_age_seconds=ttl_seconds,
+                self.legacy_data_dir / "realtime.csv", today_only=True, max_age_seconds=ttl_seconds,
             )
             if not legacy_cached_df.empty:
                 cached_df, cached_at, cache_age = legacy_cached_df, legacy_cached_at, legacy_cache_age
@@ -243,45 +327,40 @@ class DataFetcher:
             logger.info(f"使用缓存的实时数据: {cached_at}，缓存年龄 {self._format_cache_age(cache_age)}，数据源 {cached_df['数据源'].iloc[0]}")
             return cached_df
         if cached_at is not None:
-            logger.info(f"实时缓存已过期: {cached_at}，缓存年龄 {self._format_cache_age(cache_age)}，重新拉取")
+            logger.info(f"实时缓存已过期: {cached_at}，重新拉取")
 
-        fetchers = [
-            ("东方财富", ak.stock_zh_a_spot_em, 20),
-            ("新浪", ak.stock_zh_a_spot, 15),
-        ]
+        # 腾讯直连（主力）
+        df = self._fetch_tencent_realtime()
+        if not df.empty:
+            df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+            return df
 
-        last_error = None
-        for source_name, fetch_func, timeout in fetchers:
-            for attempt in range(1, 4):
-                try:
-                    logger.info(f"尝试从{source_name}获取实时行情({attempt}/3)...")
-                    df = ak_call(fetch_func, timeout=timeout)
-                    df = self._ensure_columns(df, source=source_name)
-                    if not df.empty:
-                        logger.info(f"成功从{source_name}获取 {len(df)} 只股票实时数据")
-                        df.to_csv(cache_file, index=False, encoding="utf-8-sig")
-                        return df
-                except TimeoutError as e:
-                    last_error = e
-                    logger.warning(f"{source_name}实时行情获取超时({attempt}/3): {e}")
-                    time.sleep(1)
-                except Exception as e:
-                    last_error = e
-                    logger.warning(f"{source_name}实时行情获取失败({attempt}/3): {e}")
-                    time.sleep(1)
+        # 新浪（备用）
+        logger.warning("腾讯行情失败，降级到新浪")
+        for attempt in range(1, 4):
+            try:
+                logger.info(f"尝试从新浪获取实时行情({attempt}/3)...")
+                df = ak_call(ak.stock_zh_a_spot, timeout=30)
+                df = self._ensure_columns(df, source="新浪")
+                if not df.empty:
+                    logger.info(f"成功从新浪获取 {len(df)} 只股票实时数据")
+                    df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+                    return df
+            except Exception as e:
+                logger.warning(f"新浪实时行情获取失败({attempt}/3): {e}")
+                time.sleep(1)
 
         stale_df, stale_at, stale_age = self._read_realtime_cache(cache_file, today_only=False)
         if stale_df.empty and self.legacy_data_dir is not None:
             stale_df, stale_at, stale_age = self._read_realtime_cache(
-                self.legacy_data_dir / "realtime.csv",
-                today_only=False,
+                self.legacy_data_dir / "realtime.csv", today_only=False,
             )
         if not stale_df.empty:
             source = stale_df["数据源"].iloc[0] if "数据源" in stale_df.columns else "unknown"
-            logger.error(f"实时行情接口全部失败，使用最近缓存: {stale_at}，缓存年龄 {self._format_cache_age(stale_age)}，数据源 {source}。注意：这不是当前实时行情，只能应急参考。")
+            logger.error(f"实时行情接口全部失败，使用最近缓存: {stale_at}，缓存年龄 {self._format_cache_age(stale_age)}，数据源 {source}")
             return stale_df
 
-        logger.error(f"获取实时行情失败: {last_error}")
+        logger.error("获取实时行情全部失败")
         return pd.DataFrame()
 
     def get_history(self, code, days=30):
