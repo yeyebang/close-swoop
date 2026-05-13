@@ -67,6 +67,15 @@ async function apiGet(path) {
   return res.json();
 }
 
+async function apiPost(path, data) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return res.json();
+}
+
 async function runScan() {
   const btn = document.getElementById('scanBtn');
   btn.disabled = true;
@@ -90,7 +99,11 @@ function updateScanStatus(state, text) {
   el.querySelector('.status-text').textContent = text;
 }
 
+let _scanMinimized = false;
+
 function openScanModal() {
+  _scanMinimized = false;
+  document.getElementById('scanMiniBubble').style.display = 'none';
   const modal = document.getElementById('scanModal');
   modal.classList.add('visible');
   document.getElementById('scanPhaseText').textContent = '准备中...';
@@ -100,8 +113,24 @@ function openScanModal() {
 }
 
 function closeScanModal() {
-  const modal = document.getElementById('scanModal');
-  modal.classList.remove('visible');
+  _scanMinimized = false;
+  document.getElementById('scanModal').classList.remove('visible');
+  document.getElementById('scanMiniBubble').style.display = 'none';
+}
+
+function minimizeScanModal() {
+  _scanMinimized = true;
+  document.getElementById('scanModal').classList.remove('visible');
+  const bubble = document.getElementById('scanMiniBubble');
+  bubble.style.display = 'flex';
+  const phase = document.getElementById('scanPhaseText').textContent || '扫描中...';
+  document.getElementById('scanMiniBubbleText').textContent = phase;
+}
+
+function restoreScanModal() {
+  _scanMinimized = false;
+  document.getElementById('scanModal').classList.add('visible');
+  document.getElementById('scanMiniBubble').style.display = 'none';
 }
 
 function updateScanModal(status) {
@@ -126,6 +155,11 @@ function updateScanModal(status) {
 
   // Indeterminate progress animation during scan
   progressBar.classList.add('indeterminate');
+
+  // 同步气泡文字
+  if (_scanMinimized) {
+    document.getElementById('scanMiniBubbleText').textContent = phase;
+  }
 }
 
 async function pollScanStatus() {
@@ -137,25 +171,69 @@ async function pollScanStatus() {
       btn.querySelector('span').textContent = '开始扫描';
       const progressBar = document.getElementById('scanProgressBar');
       progressBar.classList.remove('indeterminate');
+      progressBar.style.width = '100%';
+
       if (status.scan_phase === 'completed') {
         updateScanStatus('completed', '扫描完成');
-        document.getElementById('scanPhaseText').textContent = '扫描完成';
-        progressBar.style.width = '100%';
-        setTimeout(closeScanModal, 1500);
-       } else {
+        _setScanPhase('扫描完成，正在更新收益数据...');
+        _setBubbleText('更新收益中...');
+        // 自动结算，更新次日收益和虚拟盘状态
+        _autoSettleAfterScan();
+      } else {
         updateScanStatus('failed', status.scan_error || '失败');
-        document.getElementById('scanPhaseText').textContent = '扫描失败';
-        progressBar.style.width = '100%';
-       }
-      loadDashboard();
-      refreshCurrentTab();
+        _setScanPhase('扫描失败：' + (status.scan_error || '未知错误'));
+        _setBubbleText('扫描失败');
+        loadDashboard();
+        refreshCurrentTab();
+      }
       return;
-     }
+    }
     updateScanStatus('running', status.scan_phase || '扫描中');
     updateScanModal(status);
     setTimeout(check, 2000);
-   };
+  };
   check();
+}
+
+function _setScanPhase(text) {
+  document.getElementById('scanPhaseText').textContent = text;
+}
+
+function _setBubbleText(text) {
+  if (_scanMinimized) {
+    document.getElementById('scanMiniBubbleText').textContent = text;
+  }
+}
+
+async function _autoSettleAfterScan() {
+  try {
+    await apiPost('/api/settle-now', {});
+  } catch (_) { /* 结算接口失败不影响刷新 */ }
+
+  const poll = async () => {
+    try {
+      const s = await apiGet('/api/settle/status');
+      if (s.running) {
+        setTimeout(poll, 1500);
+        return;
+      }
+      const last = s.last;
+      if (last) {
+        const msg = last.error ? '收益更新失败' : (last.msg || `结算 ${last.settled ?? 0} 条`);
+        _setScanPhase('扫描完成 · ' + msg);
+        _setBubbleText('扫描完成');
+      }
+    } catch (_) { /* 忽略 */ }
+    loadDashboard();
+    refreshCurrentTab();
+    // 若已最小化则不自动关闭，让用户自己点气泡查看；否则 2s 后关闭
+    if (!_scanMinimized) {
+      setTimeout(closeScanModal, 2000);
+    } else {
+      document.getElementById('scanMiniBubbleText').textContent = '扫描完成 ✓';
+    }
+  };
+  poll();
 }
 
 async function runBacktest(mode) {

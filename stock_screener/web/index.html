@@ -252,7 +252,12 @@
   <div class="scan-modal-content">
     <div class="scan-modal-header">
       <h3>扫描进度</h3>
-      <button class="scan-modal-close" onclick="closeScanModal()">×</button>
+      <div class="scan-modal-actions">
+        <button class="scan-modal-minimize" onclick="minimizeScanModal()" title="最小化">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="16" height="16"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button class="scan-modal-close" onclick="closeScanModal()">×</button>
+      </div>
     </div>
     <div class="scan-modal-body">
       <div class="scan-phase-row">
@@ -268,6 +273,12 @@
       </div>
     </div>
   </div>
+</div>
+
+<div id="scanMiniBubble" class="scan-mini-bubble" onclick="restoreScanModal()" style="display:none">
+  <span class="scan-mini-dot"></span>
+  <span id="scanMiniBubbleText">扫描中...</span>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polyline points="15,3 21,3 21,9"/><polyline points="9,21 3,21 3,15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
 </div>
 
 <script src="/app.js"></script>
