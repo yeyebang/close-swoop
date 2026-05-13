@@ -118,12 +118,30 @@
     </div>
 
     <div id="candidates" class="tab-content">
-      <div class="card">
-        <h3>全部候选股</h3>
+      <div class="section-toolbar">
+        <button class="btn btn-secondary" onclick="toggleCandidatesView('latest')">最新扫描</button>
+        <button class="btn btn-secondary" onclick="toggleCandidatesView('history')">历史记录</button>
+        <button id="settleNowBtn" class="btn btn-primary" onclick="runSettleNow()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+          <span>复盘次日收益</span>
+        </button>
+        <span id="settleStatus" class="toolbar-status"></span>
+      </div>
+      <div id="candidatesLatest" class="card">
+        <h3>最新扫描候选股</h3>
         <div class="table-wrapper">
           <table id="allCandidatesTable">
             <thead><tr><th>日期</th><th>代码</th><th>名称</th><th>收盘价</th><th>涨跌幅</th><th>换手率</th><th>评分</th><th>次日开盘收益</th></tr></thead>
             <tbody id="allCandidatesBody"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="candidatesHistory" class="card" style="display:none">
+        <h3>历史候选股记录</h3>
+        <div class="table-wrapper">
+          <table id="histCandidatesTable">
+            <thead><tr><th>扫描时间</th><th>代码</th><th>名称</th><th>涨跌幅</th><th>换手率</th><th>评分</th><th>次日开盘收益</th></tr></thead>
+            <tbody id="histCandidatesBody"><tr><td colspan="7" class="empty">点击「历史记录」加载</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -171,6 +189,13 @@
     </div>
 
     <div id="paper" class="tab-content">
+      <div class="section-toolbar">
+        <button id="paperSettleBtn" class="btn btn-primary" onclick="runSettleNow()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+          <span>复盘次日收益</span>
+        </button>
+        <span id="paperSettleStatus" class="toolbar-status"></span>
+      </div>
       <div class="card">
         <h3>扫描信号跟踪</h3>
         <div class="table-wrapper">

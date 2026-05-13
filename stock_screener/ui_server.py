@@ -17,6 +17,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -24,8 +26,8 @@ from typing import Any
 import pandas as pd
 
 from stock_screener.main import BASE_DIR, CONFIG_FILE, load_config
-from stock_screener.paper import paper_report
-from stock_screener.research import resolve_data_dir
+from stock_screener.paper import paper_report, load_ledger, settle_pending
+from stock_screener.research import resolve_data_dir, LEGACY_DATA_DIR
 
 
 ROOT_DIR = BASE_DIR.parent
@@ -99,6 +101,8 @@ class UiHandler(BaseHTTPRequestHandler):
                 self._send_json(start_scan())
             elif parsed.path == "/api/backtest/run":
                 self._send_json(start_backtest(payload))
+            elif parsed.path == "/api/settle-now":
+                self._send_json(start_settle_now())
             else:
                 self._send_json({"error": "未知接口"}, status=404)
         except Exception as exc:
@@ -127,6 +131,8 @@ class UiHandler(BaseHTTPRequestHandler):
             self._send_json(get_backtest_report(query))
         elif path == "/api/minute-backtest":
             self._send_json(get_minute_backtest())
+        elif path == "/api/settle/status":
+            self._send_json(settle_state())
         else:
             self._send_json({"error": "未知接口"}, status=404)
 
@@ -237,6 +243,8 @@ def get_results(query: dict[str, list[str]]) -> dict[str, Any]:
         path = REPORT_DIR / "latest_candidates.csv"
     elif scope == "paper":
         path = PAPER_LEDGER
+    elif scope == "candidates-history":
+        return get_candidates_history(limit)
     elif scope == "backtest":
         mode = first(query, "mode", "daily")
         path = REPORT_DIR / ("minute_backtest_picks.csv" if mode == "minute" else "backtest_picks.csv")
@@ -673,6 +681,143 @@ def score_buckets(df: pd.DataFrame, score_col: str) -> list[dict[str, Any]]:
             count = int(((scores >= low) & (scores <= high)).sum())
         data.append({"label": label, "value": count, "color": color})
     return data
+
+
+# ==================== 复盘 (settle-now) ====================
+
+_SETTLE_STATE: dict[str, Any] = {"running": False, "last": None}
+
+
+def settle_state() -> dict[str, Any]:
+    return dict(_SETTLE_STATE)
+
+
+def start_settle_now() -> dict[str, Any]:
+    if _SETTLE_STATE["running"]:
+        return {"status": "already_running"}
+    _SETTLE_STATE["running"] = True
+    _SETTLE_STATE["last"] = None
+    t = threading.Thread(target=_run_settle_now, daemon=True)
+    t.start()
+    return {"status": "started"}
+
+
+def _run_settle_now() -> None:
+    try:
+        result = _do_settle_now()
+        _SETTLE_STATE["last"] = result
+    except Exception as exc:
+        _SETTLE_STATE["last"] = {"error": str(exc)}
+    finally:
+        _SETTLE_STATE["running"] = False
+
+
+def _do_settle_now() -> dict[str, Any]:
+    """只为 paper ledger 中未结算的股票拉取历史日K，然后运行 settle_pending。"""
+    try:
+        import akshare as ak
+    except ImportError:
+        return {"error": "akshare 未安装"}
+
+    config = load_config()
+    data_dir = resolve_data_dir(config)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    ledger = load_ledger()
+    if ledger.empty:
+        return {"settled": 0, "open": 0, "msg": "虚拟盘台账为空"}
+
+    open_mask = (ledger["status"] == "open") & (ledger["signal_date"].astype(str) < today)
+    if not open_mask.any():
+        return {"settled": 0, "open": int((ledger["status"] == "open").sum()), "msg": "无待结算记录"}
+
+    codes = ledger[open_mask]["code"].map(normalize_code).dropna().unique().tolist()
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+
+    fetched, failed = 0, 0
+
+    def fetch_history(code: str) -> None:
+        nonlocal fetched, failed
+        cache_file = data_dir / f"history_{code}.csv"
+        try:
+            df = ak.stock_zh_a_hist(
+                symbol=code, period="daily",
+                start_date=start_date, end_date=end_date, adjust="qfq",
+            )
+            if df is None or df.empty:
+                failed += 1
+                return
+            # 确保列名兼容 paper.py 的结算逻辑
+            col_map = {"date": "日期", "open": "开盘", "close": "收盘",
+                       "high": "最高", "low": "最低", "volume": "成交量"}
+            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+            if "日期" in df.columns:
+                df["日期"] = pd.to_datetime(df["日期"], errors="coerce").dt.strftime("%Y-%m-%d")
+            # 追加合并已有历史（保留更早数据）
+            if cache_file.exists():
+                old = pd.read_csv(cache_file, dtype=str)
+                if "日期" in old.columns and "日期" in df.columns:
+                    df_str = df.copy()
+                    df_str["日期"] = df_str["日期"].astype(str)
+                    combined = pd.concat([old, df_str]).drop_duplicates("日期").sort_values("日期")
+                    combined.to_csv(cache_file, index=False, encoding="utf-8-sig")
+                    fetched += 1
+                    return
+            df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+            fetched += 1
+        except Exception:
+            failed += 1
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        pool.map(fetch_history, codes)
+
+    fallback_dirs = [LEGACY_DATA_DIR] if LEGACY_DATA_DIR and LEGACY_DATA_DIR.exists() else []
+    settle_result = settle_pending(
+        pd.DataFrame(), data_dir,
+        success_return_pct=float(config.get("paper", {}).get("success_return_pct", 1.0)),
+        fallback_data_dirs=fallback_dirs,
+    )
+    settle_result["fetched_codes"] = fetched
+    settle_result["failed_codes"] = failed
+    settle_result["msg"] = f"拉取 {fetched} 只，结算 {settle_result.get('settled', 0)} 条"
+    return settle_result
+
+
+# ==================== 候选股历史 ====================
+
+def get_candidates_history(limit: int = 2000) -> dict[str, Any]:
+    """合并所有历史扫描的全量结果文件，按时间倒序返回。"""
+    all_files = sorted(BASE_DIR.glob("results_all_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not all_files:
+        return {"file": None, "rows": [], "columns": []}
+
+    frames = []
+    for f in all_files[:30]:  # 最多读 30 个文件，避免太慢
+        try:
+            df = pd.read_csv(f, dtype={"代码": str, "code": str})
+            if "信号时间" not in df.columns:
+                df["信号时间"] = f.stem.replace("results_all_", "").replace("_", " ", 1)
+            frames.append(df)
+        except Exception:
+            continue
+
+    if not frames:
+        return {"file": None, "rows": [], "columns": []}
+
+    merged = pd.concat(frames, ignore_index=True)
+
+    # join paper 复盘收益
+    if PAPER_LEDGER.exists():
+        merged = _enrich_with_paper_returns(merged)
+
+    # 按信号时间倒序
+    merged["_sort"] = pd.to_datetime(merged["信号时间"], errors="coerce")
+    merged = merged.sort_values("_sort", ascending=False).drop(columns=["_sort"])
+    merged = merged.head(limit)
+
+    return {"file": None, "rows": dataframe_records(merged), "columns": list(merged.columns)}
 
 
 if __name__ == "__main__":

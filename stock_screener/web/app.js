@@ -616,3 +616,93 @@ window.addEventListener('load', init);
 window.addEventListener('resize', () => {
   requestAnimationFrame(renderDashboardCharts);
 });
+
+// ==================== 复盘次日收益 ====================
+
+let _settlePolling = null;
+
+async function runSettleNow() {
+  const statusEls = [
+    document.getElementById('settleStatus'),
+    document.getElementById('paperSettleStatus'),
+  ].filter(Boolean);
+  const btns = [
+    document.getElementById('settleNowBtn'),
+    document.getElementById('paperSettleBtn'),
+  ].filter(Boolean);
+
+  btns.forEach(b => b.disabled = true);
+  statusEls.forEach(el => { el.textContent = '正在拉取历史数据...'; el.className = 'toolbar-status'; });
+
+  try {
+    await apiPost('/api/settle-now', {});
+  } catch (e) {
+    statusEls.forEach(el => { el.textContent = '启动失败: ' + e.message; el.className = 'toolbar-status error'; });
+    btns.forEach(b => b.disabled = false);
+    return;
+  }
+
+  if (_settlePolling) clearInterval(_settlePolling);
+  _settlePolling = setInterval(async () => {
+    const s = await apiGet('/api/settle/status');
+    if (!s.running && s.last !== null) {
+      clearInterval(_settlePolling);
+      _settlePolling = null;
+      btns.forEach(b => b.disabled = false);
+      const last = s.last;
+      if (last.error) {
+        statusEls.forEach(el => { el.textContent = '失败: ' + last.error; el.className = 'toolbar-status error'; });
+      } else {
+        const msg = last.msg || `结算 ${last.settled ?? 0} 条`;
+        statusEls.forEach(el => { el.textContent = msg; el.className = 'toolbar-status success'; });
+        // 刷新数据
+        loadAllCandidates();
+        document.getElementById('paperBody').dataset.loaded = 'true';
+        loadPaper();
+      }
+    }
+  }, 1500);
+}
+
+// ==================== 候选股历史视图 ====================
+
+let _candidatesView = 'latest';
+let _histLoaded = false;
+
+function toggleCandidatesView(view) {
+  _candidatesView = view;
+  document.getElementById('candidatesLatest').style.display = view === 'latest' ? '' : 'none';
+  document.getElementById('candidatesHistory').style.display = view === 'history' ? '' : 'none';
+  if (view === 'history' && !_histLoaded) {
+    _histLoaded = true;
+    loadHistCandidates();
+  }
+}
+
+async function loadHistCandidates() {
+  const tbody = document.getElementById('histCandidatesBody');
+  tbody.innerHTML = '<tr><td colspan="7" class="empty">加载中...</td></tr>';
+  const data = await apiGet('/api/results?scope=candidates-history&limit=1000');
+  if (!data.rows || data.rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无历史记录</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.rows.map(r => {
+    const chg = parseFloat(r['涨跌幅%'] ?? r['change_pct'] ?? 0);
+    const chgCls = chg >= 0 ? 'change-positive' : 'change-negative';
+    const retRaw = parseFloat(r['next_return_pct'] ?? r['next_day_open_return'] ?? '');
+    const retText = Number.isFinite(retRaw) ? retRaw.toFixed(2) + '%' : '--';
+    const retCls = Number.isFinite(retRaw) && retRaw >= 0 ? 'change-positive' : 'change-negative';
+    const score = r['final_score'] ?? r['score'] ?? '--';
+    const dt = r['信号时间'] || r['行情采集时间'] || '';
+    return `<tr>
+      <td>${dt}</td>
+      <td>${r['代码'] || r['code'] || ''}</td>
+      <td>${r['名称'] || r['name'] || ''}</td>
+      <td class="${chgCls}">${chg.toFixed(2)}%</td>
+      <td>${r['换手率%'] ?? r['turnover_rate_daily'] ?? '--'}</td>
+      <td><strong>${score}</strong></td>
+      <td class="${retCls}">${retText}</td>
+    </tr>`;
+  }).join('');
+}
