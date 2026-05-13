@@ -1,7 +1,7 @@
 # A股尾盘涨停扫描器 - 开发文档
 
-> 版本: v3.0
-> 最后更新: 2026-05-12
+> 版本: v3.1
+> 最后更新: 2026-05-13
 
 ---
 
@@ -22,9 +22,22 @@
 次日 9:30 开盘验证（次日开盘价相对扫描观察价/代理价的收益率）
 ```
 
-### 1.3 2026-05-12 修复记录
+### 1.3 变更记录
 
-本次修复围绕“下午扫描、次日开盘退出”的真实使用链路展开，重点解决数据源失败误报、扫描结果和 UI 语义不一致、虚拟盘结算逻辑不匹配的问题。
+#### v3.1（2026-05-13）
+
+| 模块 | 修改 | 目的 |
+|------|------|------|
+| `data_fetcher.py` | 实时行情主源从东方财富改为**腾讯直连 HTTP** (`qt.gtimg.cn`) | 东方财富频繁超时，腾讯直连热缓存 ~0.7s 完成全市场 5200+ 只 |
+| `data_fetcher.py` | 并发 5 线程批量拉取，每批 100 只 | 首次含代码列表约 6s，之后代码列表缓存 24h |
+| `data_fetcher.py` | 新浪降为托底备用；旧缓存应急保留 | 腾讯失败时仍能完成扫描（新浪缺量比/换手率会填 0） |
+| `paper.py` | `settle_pending` 新增 `fallback_data_dirs` 参数 | 结算逻辑可依次查找多个历史文件目录 |
+| `main.py` | 传入 `legacy_data_dir` 作为结算 fallback | 修复 settlement 读不到 history 文件（文件在 legacy 目录） |
+| `ui_server.py` | 新增 `_enrich_with_paper_returns()`，`scope=all/top` 时自动 join paper ledger | 候选股列表现在会展示已结算的次日开盘收益 |
+| `web/app.js` | 候选股表格列名修正：`next_day_open_return` → `next_return_pct` | 原列名从未存在，导致次日收益永远显示 `--` |
+| `web/index.html` | 版本号 v2 → v3 | — |
+
+#### v3.0（2026-05-12）
 
 | 模块 | 修改 | 目的 |
 |------|------|------|
@@ -32,17 +45,16 @@
 | `main.py` | 东方财富历史源每只股票默认只试 1 次，连续失败后本轮直接切新浪 | 避免每只股票三次红色失败刷屏 |
 | `config.json` | 新增 `history_primary_max_attempts`、`history_primary_failure_threshold` | 可配置历史主源重试和熔断阈值 |
 | `main.py` | 扫描结果新增 `信号时间`、`买入价`、`计划卖出=次日开盘` | 让结果文件表达真实交易计划 |
-| `paper.py` | 虚拟盘改为按信号日后第一个交易日开盘价结算 | 对齐“今日下午买、次日早盘卖”策略 |
+| `paper.py` | 虚拟盘改为按信号日后第一个交易日开盘价结算 | 对齐”今日下午买、次日早盘卖”策略 |
 | `ui_server.py` | 新增 `/api/backtest/run`、`/api/backtest/status`、`/api/backtest/report` | Web 端可运行和读取回测报告 |
 | `web/app.js` | 候选股页改读最新扫描全量结果，回测页按模式读取报告 | 避免候选股和回测数据混杂 |
-| `web/app.js` | 仪表盘评分分布改为真实扫描结果统计 | 移除固定演示数据 |
-| `web/index.html` | “分钟级回测”改名为“隔夜代理回测” | 避免把日线代理误称为真实分钟回测 |
+| `web/index.html` | “分钟级回测”改名为”隔夜代理回测” | 避免把日线代理误称为真实分钟回测 |
 
 #### 历史数据失败日志说明
 
-扫描日志中出现“东方财富历史源断开，改用新浪备用源”时，不代表这只股票无数据，也不代表扫描失败。它表示主接口连接被对方关闭，程序会继续用新浪历史源获取数据。
+扫描日志中出现”东方财富历史源断开，改用新浪备用源”时，不代表这只股票无数据，也不代表扫描失败。它表示主接口连接被对方关闭，程序会继续用新浪历史源获取数据。
 
-只有出现“历史数据全部失败，无法参与本轮评分”时，才表示该股票在本轮没有可用历史数据，会被跳过。
+只有出现”历史数据全部失败，无法参与本轮评分”时，才表示该股票在本轮没有可用历史数据，会被跳过。
 
 ### 1.4 V3 自修正闭环
 
@@ -137,16 +149,19 @@ stock-screener/
 
 ```
 DataFetcher
-├── get_all_realtime()          # 全市场实时行情（东方财富优先，新浪备用）
-├── get_history()               # 日K线（前复权）
-├── get_minute_history()        # 分钟K线（批量，N天）
-├── get_minute_history_by_date()# 分钟K线（指定日期）
-├── get_limit_up_pool()         # 涨停股池
-├── get_all_concept_sectors()   # 概念板块数据
-├── get_market_sentiment()      # 大盘情绪指标
-├── get_stock_name(code)        # 获取股票名称（从缓存）
-├── set_stock_name(code, name)  # 设置股票名称（写入缓存）
-└── batch_resolve_names(codes)  # 批量解析股票名称（AKShare + 持久化）
+├── get_all_realtime()           # 全市场实时行情（腾讯直连优先，新浪备用）
+│   ├── _fetch_tencent_realtime()    # 腾讯批量拉取（并发5线程，100只/批）
+│   ├── _fetch_tencent_batch()       # 单批次请求 qt.gtimg.cn
+│   └── _get_all_codes_tx()          # 全量代码列表（24h 缓存）
+├── get_history()                # 日K线（前复权）
+├── get_minute_history()         # 分钟K线（批量，N天）
+├── get_minute_history_by_date() # 分钟K线（指定日期）
+├── get_limit_up_pool()          # 涨停股池
+├── get_all_concept_sectors()    # 概念板块数据
+├── get_market_sentiment()       # 大盘情绪指标
+├── get_stock_name(code)         # 获取股票名称（从缓存）
+├── set_stock_name(code, name)   # 设置股票名称（写入缓存）
+└── batch_resolve_names(codes)   # 批量解析股票名称（AKShare + 持久化）
 ```
 
 #### 股票名称管理
@@ -165,10 +180,17 @@ DataFetcher
 #### 数据源降级策略
 
 ```
-实时行情:
-东方财富 (stock_zh_a_spot_em)
-  → 失败/超时后切换新浪 (stock_zh_a_spot)
+实时行情（v3.1 起）:
+腾讯直连 HTTP (qt.gtimg.cn) — 并发 5 线程，批量 100 只/次
+  → 失败后切换新浪 AKShare (stock_zh_a_spot)  ← 缺量比/换手率，填 0
   → 全部失败使用最近实时缓存（应急参考）
+
+腾讯字段覆盖：last_price / pre_close / open_price / volume /
+              change_amt / change_pct / high / low / amount /
+              turnover_rate / amplitude / volume_ratio（全覆盖）
+
+股票代码列表:
+AKShare stock_info_a_code_name() — 缓存 24h 到 cache_all_codes.json
 
 历史日K:
 东方财富 (stock_zh_a_hist)
