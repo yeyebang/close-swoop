@@ -250,8 +250,12 @@ class DataFetcher:
                 cached_at = datetime.fromisoformat(payload["cached_at"])
                 if (datetime.now() - cached_at).total_seconds() < 86400:
                     return payload["codes"]
+                # 过期但有缓存，先保留备用
+                stale_codes = payload.get("codes", [])
             except Exception:
-                pass
+                stale_codes = []
+        else:
+            stale_codes = []
         try:
             df = ak.stock_info_a_code_name()
             codes = [self._to_tx_prefix(str(r).zfill(6)) for r in df["code"].tolist()]
@@ -262,6 +266,9 @@ class DataFetcher:
             return codes
         except Exception as e:
             logger.warning(f"获取股票代码列表失败: {e}")
+            if stale_codes:
+                logger.warning(f"使用过期代码缓存（{len(stale_codes)} 只）")
+                return stale_codes
             return []
 
     def _fetch_tencent_batch(self, batch: list) -> list:
@@ -291,13 +298,24 @@ class DataFetcher:
     def _fetch_tencent_realtime(self) -> pd.DataFrame:
         codes = self._get_all_codes_tx()
         if not codes:
+            logger.warning("腾讯行情: 股票代码列表为空，跳过")
             return pd.DataFrame()
         batches = [codes[i: i + 100] for i in range(0, len(codes), 100)]
         all_rows = []
-        with ThreadPoolExecutor(max_workers=5) as pool:
-            for rows in pool.map(self._fetch_tencent_batch, batches):
-                all_rows.extend(rows)
+        failed = 0
+        try:
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                for rows in pool.map(self._fetch_tencent_batch, batches):
+                    if rows:
+                        all_rows.extend(rows)
+                    else:
+                        failed += 1
+        except Exception as e:
+            logger.warning(f"腾讯行情并发拉取异常: {e}")
+            return pd.DataFrame()
+        logger.info(f"腾讯行情批次: 成功 {len(batches)-failed}/{len(batches)}, 得到 {len(all_rows)} 条")
         if not all_rows:
+            logger.warning("腾讯行情: 所有批次均返回空数据")
             return pd.DataFrame()
         df = pd.DataFrame(all_rows)
         for col in [c for c in df.columns if c not in ("name", "code")]:
@@ -330,7 +348,11 @@ class DataFetcher:
             logger.info(f"实时缓存已过期: {cached_at}，重新拉取")
 
         # 腾讯直连（主力）
-        df = self._fetch_tencent_realtime()
+        try:
+            df = self._fetch_tencent_realtime()
+        except Exception as e:
+            logger.warning(f"腾讯行情异常: {e}")
+            df = pd.DataFrame()
         if not df.empty:
             df.to_csv(cache_file, index=False, encoding="utf-8-sig")
             return df

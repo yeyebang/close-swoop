@@ -384,17 +384,19 @@ class DataFetcher:
     def _get_all_codes_tx(self) -> list[str]:
         """获取全量A股代码列表，返回腾讯格式 (sh/sz/bj + 6位)"""
         cache_file = self.data_dir / "cache_all_codes.json"
+        stale_codes: list[str] = []
         if cache_file.exists():
             try:
                 payload = json.loads(cache_file.read_text(encoding="utf-8"))
                 cached_at = datetime.fromisoformat(payload["cached_at"])
                 if (datetime.now() - cached_at).total_seconds() < 86400:
                     return payload["codes"]
+                stale_codes = payload.get("codes", [])
             except Exception:
                 pass
 
         if ak is None:
-            return []
+            return stale_codes
         try:
             df = ak.stock_info_a_code_name()
             codes = [
@@ -408,6 +410,9 @@ class DataFetcher:
             return codes
         except Exception as e:
             logger.warning(f"获取股票代码列表失败: {e}")
+            if stale_codes:
+                logger.warning(f"使用过期代码缓存（{len(stale_codes)} 只）")
+                return stale_codes
             return []
 
     def _fetch_tencent_batch(self, batch: list[str]) -> list[dict]:
@@ -447,18 +452,30 @@ class DataFetcher:
         """腾讯直连批量获取全市场行情（并发5线程，约 3-5 秒完成）"""
         codes = self._get_all_codes_tx()
         if not codes:
+            logger.warning("腾讯行情: 股票代码列表为空，跳过")
             return None
 
         batch_size = 100
         batches = [codes[i: i + batch_size] for i in range(0, len(codes), batch_size)]
         all_rows: list[dict] = []
+        failed = 0
 
-        with ThreadPoolExecutor(max_workers=5) as pool:
-            futures = {pool.submit(self._fetch_tencent_batch, b): b for b in batches}
-            for fut in as_completed(futures):
-                all_rows.extend(fut.result())
+        try:
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                futures = {pool.submit(self._fetch_tencent_batch, b): b for b in batches}
+                for fut in as_completed(futures):
+                    rows = fut.result()
+                    if rows:
+                        all_rows.extend(rows)
+                    else:
+                        failed += 1
+        except Exception as e:
+            logger.warning(f"腾讯行情并发拉取异常: {e}")
+            return None
 
+        logger.info(f"腾讯行情批次: 成功 {len(batches)-failed}/{len(batches)}, 得到 {len(all_rows)} 条")
         if not all_rows:
+            logger.warning("腾讯行情: 所有批次均返回空数据")
             return None
 
         df = pd.DataFrame(all_rows)
@@ -486,7 +503,11 @@ class DataFetcher:
             logger.info(f"实时缓存已过期: {cached_at}，重新拉取")
 
         # 腾讯直连（主力）
-        df = self._fetch_tencent_realtime()
+        try:
+            df = self._fetch_tencent_realtime()
+        except Exception as e:
+            logger.warning(f"腾讯行情异常: {e}")
+            df = None
         if df is not None and not df.empty:
             self.cache.write("realtime", df)
             return df
