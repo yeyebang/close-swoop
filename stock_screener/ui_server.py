@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import requests
 
 from stock_screener.main import BASE_DIR, CONFIG_FILE, load_config
 from stock_screener.paper import paper_report, load_ledger, settle_pending
@@ -712,13 +713,82 @@ def _run_settle_now() -> None:
         _SETTLE_STATE["running"] = False
 
 
-def _do_settle_now() -> dict[str, Any]:
-    """只为 paper ledger 中未结算的股票拉取历史日K，然后运行 settle_pending。"""
-    try:
-        import akshare as ak
-    except ImportError:
-        return {"error": "akshare 未安装"}
+_TX_KLINE_HEADERS = {"Referer": "https://gu.qq.com/", "User-Agent": "Mozilla/5.0"}
+_TX_RT_HEADERS = {"Referer": "https://finance.qq.com", "User-Agent": "Mozilla/5.0"}
 
+
+def _to_tx_prefix(code: str) -> str:
+    code = str(code).zfill(6)
+    if code.startswith(("6", "9")):
+        return "sh" + code
+    if code.startswith(("4", "8")):
+        return "bj" + code
+    return "sz" + code
+
+
+def _fetch_tencent_kline(code: str, days: int = 30) -> pd.DataFrame:
+    """腾讯日K (前复权)，返回 [日期, 开盘, 收盘, 最高, 最低, 成交量]"""
+    sym = _to_tx_prefix(code)
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days * 2 + 10)).strftime("%Y-%m-%d")
+    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+           f"?param={sym},day,{start},{end},{days + 5},qfq")
+    try:
+        resp = requests.get(url, headers=_TX_KLINE_HEADERS, timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+        node = data.get("data", {}).get(sym, {})
+        items = node.get("qfqday") or node.get("day") or []
+        rows = []
+        for item in items:
+            if len(item) < 6:
+                continue
+            try:
+                rows.append({
+                    "日期": str(item[0])[:10],
+                    "开盘": float(item[1]),
+                    "收盘": float(item[2]),
+                    "最高": float(item[3]),
+                    "最低": float(item[4]),
+                    "成交量": float(item[5]),
+                })
+            except (ValueError, TypeError):
+                continue
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _fetch_tencent_today_opens(codes: list[str]) -> dict[str, float]:
+    """批量拉今日开盘价 -> {code6: open_price}（仅有效开盘价>0）"""
+    result: dict[str, float] = {}
+    syms = [_to_tx_prefix(c) for c in codes]
+    for i in range(0, len(syms), 100):
+        batch = syms[i:i + 100]
+        url = "https://qt.gtimg.cn/q=" + ",".join(batch)
+        try:
+            resp = requests.get(url, headers=_TX_RT_HEADERS, timeout=8)
+            resp.raise_for_status()
+            for line in resp.text.strip().split("\n"):
+                if "~" not in line or "=" not in line:
+                    continue
+                try:
+                    parts = line.split('"')[1].split("~")
+                    if len(parts) < 6:
+                        continue
+                    code6 = normalize_code(parts[2])
+                    open_price = float(parts[5]) if parts[5] else 0.0
+                    if open_price > 0:
+                        result[code6] = open_price
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return result
+
+
+def _do_settle_now() -> dict[str, Any]:
+    """为虚拟盘未结算股票拉取腾讯日K + 今日开盘价，然后运行 settle_pending。"""
     config = load_config()
     data_dir = resolve_data_dir(config)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -728,50 +798,55 @@ def _do_settle_now() -> dict[str, Any]:
     if ledger.empty:
         return {"settled": 0, "open": 0, "msg": "虚拟盘台账为空"}
 
-    open_mask = (ledger["status"] == "open") & (ledger["signal_date"].astype(str) < today)
+    sig_dates = ledger["signal_date"].astype(str)
+    open_status = ledger["status"] == "open"
+    open_mask = open_status & (sig_dates < today)
+    open_today = int((open_status & (sig_dates == today)).sum())
+
     if not open_mask.any():
-        return {"settled": 0, "open": int((ledger["status"] == "open").sum()), "msg": "无待结算记录"}
+        msg = f"暂无可结算记录（今日 {open_today} 条信号待明日开盘后复盘）" if open_today else "无待结算记录"
+        return {"settled": 0, "open": int(open_status.sum()), "msg": msg}
 
     codes = ledger[open_mask]["code"].map(normalize_code).dropna().unique().tolist()
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
-
     fetched, failed = 0, 0
 
+    # 1) 批量取今日开盘价（用作"次日开盘"对昨日/早些信号的结算价）
+    today_opens = _fetch_tencent_today_opens(codes)
+
+    # 2) 并发拉日K，合并今日开盘价后写入 history_{code}.csv
     def fetch_history(code: str) -> None:
         nonlocal fetched, failed
-        cache_file = data_dir / f"history_{code}.csv"
-        try:
-            df = ak.stock_zh_a_hist(
-                symbol=code, period="daily",
-                start_date=start_date, end_date=end_date, adjust="qfq",
+        kline_df = _fetch_tencent_kline(code, days=30)
+        if kline_df.empty:
+            failed += 1
+            return
+        today_open = today_opens.get(code)
+        if today_open and today_open > 0:
+            today_row = pd.DataFrame([{
+                "日期": today, "开盘": today_open, "收盘": today_open,
+                "最高": today_open, "最低": today_open, "成交量": 0,
+            }])
+            kline_df = pd.concat(
+                [kline_df[kline_df["日期"] != today], today_row], ignore_index=True
             )
-            if df is None or df.empty:
-                failed += 1
-                return
-            # 确保列名兼容 paper.py 的结算逻辑
-            col_map = {"date": "日期", "open": "开盘", "close": "收盘",
-                       "high": "最高", "low": "最低", "volume": "成交量"}
-            df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-            if "日期" in df.columns:
-                df["日期"] = pd.to_datetime(df["日期"], errors="coerce").dt.strftime("%Y-%m-%d")
-            # 追加合并已有历史（保留更早数据）
-            if cache_file.exists():
-                old = pd.read_csv(cache_file, dtype=str)
-                if "日期" in old.columns and "日期" in df.columns:
-                    df_str = df.copy()
-                    df_str["日期"] = df_str["日期"].astype(str)
-                    combined = pd.concat([old, df_str]).drop_duplicates("日期").sort_values("日期")
+        cache_file = data_dir / f"history_{code}.csv"
+        if cache_file.exists():
+            try:
+                old = pd.read_csv(cache_file, dtype={"日期": str})
+                if "日期" in old.columns:
+                    combined = pd.concat([old, kline_df]).drop_duplicates(
+                        "日期", keep="last"
+                    ).sort_values("日期")
                     combined.to_csv(cache_file, index=False, encoding="utf-8-sig")
                     fetched += 1
                     return
-            df.to_csv(cache_file, index=False, encoding="utf-8-sig")
-            fetched += 1
-        except Exception:
-            failed += 1
+            except Exception:
+                pass
+        kline_df.to_csv(cache_file, index=False, encoding="utf-8-sig")
+        fetched += 1
 
     with ThreadPoolExecutor(max_workers=5) as pool:
-        pool.map(fetch_history, codes)
+        list(pool.map(fetch_history, codes))
 
     fallback_dirs = [LEGACY_DATA_DIR] if LEGACY_DATA_DIR and LEGACY_DATA_DIR.exists() else []
     settle_result = settle_pending(
@@ -779,9 +854,16 @@ def _do_settle_now() -> dict[str, Any]:
         success_return_pct=float(config.get("paper", {}).get("success_return_pct", 1.0)),
         fallback_data_dirs=fallback_dirs,
     )
+    settled = settle_result.get("settled", 0)
+    waiting = settle_result.get("waiting_for_next_open", 0)
     settle_result["fetched_codes"] = fetched
     settle_result["failed_codes"] = failed
-    settle_result["msg"] = f"拉取 {fetched} 只，结算 {settle_result.get('settled', 0)} 条"
+    parts = [f"拉取 {fetched} 只", f"结算 {settled} 条"]
+    if waiting:
+        parts.append(f"{waiting} 条等待新交易日")
+    if open_today:
+        parts.append(f"今日 {open_today} 条待明日复盘")
+    settle_result["msg"] = "，".join(parts)
     return settle_result
 
 
