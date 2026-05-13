@@ -408,32 +408,28 @@ class DataFetcher:
             return pd.DataFrame()
 
         last_error = None
+        # 主源：腾讯日K（与实时行情同一通道，稳定快速）
         if not self.history_primary_disabled:
             attempts = max(1, int(self.config.get("history_primary_max_attempts", 1)))
             for attempt in range(1, attempts + 1):
                 try:
-                    logger.debug(f"获取 {code} 东方财富历史数据({attempt}/{attempts})...")
-                    df = ak_call(ak.stock_zh_a_hist, timeout=12, symbol=code, period="daily",
-                                 start_date=start_date, end_date=end_date, adjust="qfq")
+                    df = self._fetch_history_from_tencent(code, days=days)
                     if not df.empty:
-                        df = self._ensure_history_columns(df)
                         df.to_csv(cache_file, index=False, encoding="utf-8-sig")
-                        logger.debug(f"获取 {code} 历史数据成功: 东方财富 {len(df)} 行")
+                        logger.debug(f"获取 {code} 历史数据成功: 腾讯 {len(df)} 行")
                         self.history_primary_failures = 0
                         self.history_refresh_failures = 0
                         return df
-                    last_error = f"{code} 东方财富返回空数据"
-                except TimeoutError as e:
-                    last_error = e
-                    logger.info(f"{code} 东方财富历史源超时，改用新浪备用源")
+                    last_error = f"{code} 腾讯返回空数据"
                 except Exception as e:
                     last_error = e
-                    logger.info(f"{code} 东方财富历史源断开，改用新浪备用源")
+                    logger.debug(f"{code} 腾讯历史源失败({attempt}/{attempts}): {e}")
                 if attempt < attempts:
                     time.sleep(0.5)
             self._record_history_primary_failure(last_error)
+            logger.info(f"{code} 腾讯历史源失败，改用新浪备用源")
         else:
-            logger.debug(f"{code} 东方财富历史源本轮已暂停，直接使用新浪备用源")
+            logger.debug(f"{code} 腾讯历史源本轮已暂停，直接使用新浪备用源")
 
         fallback = self._fetch_history_from_sina(code, start_date, end_date)
         if not fallback.empty:
@@ -514,6 +510,46 @@ class DataFetcher:
         if code.startswith(("4", "8", "9")):
             return f"bj{code}"
         return code
+
+    def _fetch_history_from_tencent(self, code, days=30):
+        """腾讯前复权日K (web.ifzq.gtimg.cn)"""
+        sym = self._to_tx_prefix(code)
+        end = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=days * 2 + 10)).strftime("%Y-%m-%d")
+        url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+               f"?param={sym},day,{start},{end},{days + 5},qfq")
+        try:
+            resp = _requests.get(
+                url,
+                headers={"Referer": "https://gu.qq.com/", "User-Agent": "Mozilla/5.0"},
+                timeout=8,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            node = data.get("data", {}).get(sym, {})
+            items = node.get("qfqday") or node.get("day") or []
+            rows = []
+            for item in items:
+                if len(item) < 6:
+                    continue
+                try:
+                    rows.append({
+                        "日期": str(item[0])[:10],
+                        "开盘": float(item[1]),
+                        "收盘": float(item[2]),
+                        "最高": float(item[3]),
+                        "最低": float(item[4]),
+                        "成交量": float(item[5]),
+                    })
+                except (ValueError, TypeError):
+                    continue
+            if not rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(rows)
+            return self._ensure_history_columns(df)
+        except Exception as e:
+            logger.debug(f"{code} 腾讯历史源失败: {e}")
+            return pd.DataFrame()
 
     def _fetch_history_from_sina(self, code, start_date, end_date):
         try:

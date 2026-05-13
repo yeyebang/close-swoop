@@ -328,12 +328,8 @@ class DataFetcher:
 
     def get_history(self, code: str, days: int = 180) -> pd.DataFrame:
         """
-        获取个股日K线（前复权）
+        获取个股日K线（前复权）—— 腾讯主源，新浪备用
         """
-        if ak is None:
-            logger.error("akshare 未安装")
-            return pd.DataFrame()
-
         code = self.normalize_code(code)
         if not code:
             return pd.DataFrame()
@@ -343,21 +339,66 @@ class DataFetcher:
         if len(cached) >= 10:
             return cached
 
-        end_date = datetime.now().strftime("%Y%m%d")
-        start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+        # 主源：腾讯
+        df = self._fetch_history_tencent(code, days)
+        if not df.empty:
+            self.cache.write_history(cache_key, df)
+            return df
 
+        # 备用：新浪
+        if ak is not None:
+            try:
+                end_date = datetime.now().strftime("%Y%m%d")
+                start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+                df = ak.stock_zh_a_daily(
+                    symbol=self._to_tx_prefix(code),
+                    start_date=start_date, end_date=end_date,
+                    adjust="qfq",
+                )
+                if df is not None and not df.empty:
+                    self.cache.write_history(cache_key, df)
+                    return df
+            except Exception as e:
+                logger.warning(f"获取 {code} 新浪日K失败: {e}")
+
+        return cached if len(cached) > 0 else pd.DataFrame()
+
+    def _fetch_history_tencent(self, code: str, days: int = 180) -> pd.DataFrame:
+        sym = self._to_tx_prefix(code)
+        end = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=days * 2 + 10)).strftime("%Y-%m-%d")
+        url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+               f"?param={sym},day,{start},{end},{days + 5},qfq")
         try:
-            df = ak.stock_zh_a_hist(
-                symbol=code, period="daily",
-                start_date=start_date, end_date=end_date,
-                adjust="qfq",
+            resp = _requests.get(
+                url,
+                headers={"Referer": "https://gu.qq.com/", "User-Agent": "Mozilla/5.0"},
+                timeout=8,
             )
-            if df is not None and not df.empty:
-                self.cache.write_history(cache_key, df)
-            return df if df is not None else pd.DataFrame()
+            resp.raise_for_status()
+            data = resp.json()
+            node = data.get("data", {}).get(sym, {})
+            items = node.get("qfqday") or node.get("day") or []
+            rows = []
+            for item in items:
+                if len(item) < 6:
+                    continue
+                try:
+                    rows.append({
+                        "日期": str(item[0])[:10],
+                        "开盘": float(item[1]),
+                        "收盘": float(item[2]),
+                        "最高": float(item[3]),
+                        "最低": float(item[4]),
+                        "成交量": float(item[5]),
+                    })
+                except (ValueError, TypeError):
+                    continue
+            return pd.DataFrame(rows)
         except Exception as e:
-            logger.warning(f"获取 {code} 日K失败: {e}")
-            return cached if len(cached) > 0 else pd.DataFrame()
+            logger.debug(f"{code} 腾讯日K失败: {e}")
+            return pd.DataFrame()
+
 
     # ---- 全市场实时行情 ----
 
