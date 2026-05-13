@@ -665,10 +665,12 @@ def scan_stocks(config):
     # --- Step 1.5: 复盘上一次虚拟盘推荐 ---
     paper_cfg = config.get("paper", {})
     if paper_cfg.get("enabled", True):
+        fallback_dirs = [fetcher.legacy_data_dir] if fetcher.legacy_data_dir else []
         settle_info = settle_pending(
             df_all,
             fetcher.data_dir,
             success_return_pct=float(paper_cfg.get("success_return_pct", 1.0)),
+            fallback_data_dirs=fallback_dirs,
         )
         if settle_info.get("settled", 0) > 0:
             logger.info(f"虚拟盘复盘完成: 结算 {settle_info['settled']} 条，未结算 {settle_info['open']} 条")

@@ -158,6 +158,37 @@ def first(query: dict[str, list[str]], key: str, default: str) -> str:
     return values[0] if values else default
 
 
+def _enrich_with_paper_returns(df: pd.DataFrame) -> pd.DataFrame:
+    """将 paper 复盘结果（次日开盘收益）join 到候选股列表。"""
+    try:
+        ledger = pd.read_csv(PAPER_LEDGER, dtype={"code": str})
+        settled = ledger[ledger["status"] == "settled"][["code", "signal_date", "next_return_pct"]].copy()
+        if settled.empty:
+            return df
+
+        # 标准化 paper ledger 的 code
+        settled["code"] = settled["code"].apply(normalize_code)
+
+        # 从候选股的 信号时间/行情采集时间 提取日期
+        date_col = next((c for c in ["信号时间", "行情采集时间"] if c in df.columns), None)
+        if date_col is None:
+            return df
+        df = df.copy()
+        df["_sig_date"] = pd.to_datetime(df[date_col], errors="coerce").dt.strftime("%Y-%m-%d")
+        df["_code6"] = df["代码"].apply(normalize_code) if "代码" in df.columns else df.get("code", "").apply(normalize_code)
+
+        # join
+        settled = settled.rename(columns={"next_return_pct": "next_return_pct"})
+        settled["_key"] = settled["signal_date"].astype(str) + "_" + settled["code"].astype(str)
+        df["_key"] = df["_sig_date"].astype(str) + "_" + df["_code6"].astype(str)
+        key_map = settled.set_index("_key")["next_return_pct"].to_dict()
+        df["next_return_pct"] = df["_key"].map(key_map)
+        df.drop(columns=["_sig_date", "_code6", "_key"], inplace=True)
+    except Exception:
+        pass
+    return df
+
+
 def get_summary() -> dict[str, Any]:
     latest_all = latest_file("results_all_*.csv")
     latest_top = latest_file("results_*.csv", exclude_prefix="results_all_")
@@ -216,6 +247,11 @@ def get_results(query: dict[str, list[str]]) -> dict[str, Any]:
         return {"file": None, "rows": [], "columns": []}
 
     df = read_csv(path, limit=None)
+
+    # 候选股列表：注入 paper 复盘结果（次日开盘收益）
+    if scope in ("all", "top") and PAPER_LEDGER.exists() and not df.empty:
+        df = _enrich_with_paper_returns(df)
+
     df = sort_result_frame(df, scope)
     if limit:
         df = df.head(limit)

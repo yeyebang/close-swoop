@@ -154,7 +154,12 @@ def append_signals(df_top: pd.DataFrame, scan_time: pd.Timestamp | None = None) 
     return len(rows)
 
 
-def settle_pending(realtime_df: pd.DataFrame, data_dir: Path, success_return_pct: float = 1.0) -> dict:
+def settle_pending(
+    realtime_df: pd.DataFrame,
+    data_dir: Path,
+    success_return_pct: float = 1.0,
+    fallback_data_dirs: list | None = None,
+) -> dict:
     """Settle open paper trades from previous scan days.
 
     Signals represent an afternoon buy and a next-session-open exit. Settlement
@@ -171,6 +176,7 @@ def settle_pending(realtime_df: pd.DataFrame, data_dir: Path, success_return_pct
     if not open_mask.any():
         return {"settled": 0, "open": int((ledger["status"] == "open").sum()), "path": str(LEDGER_PATH)}
 
+    all_data_dirs = [data_dir] + (fallback_data_dirs or [])
     settled = 0
     waiting = 0
     for idx in ledger[open_mask].index:
@@ -179,7 +185,11 @@ def settle_pending(realtime_df: pd.DataFrame, data_dir: Path, success_return_pct
         if not np.isfinite(scan_price) or scan_price <= 0:
             continue
 
-        hist = _read_history_for_code(data_dir, code)
+        hist = pd.DataFrame()
+        for d in all_data_dirs:
+            hist = _read_history_for_code(d, code)
+            if not hist.empty:
+                break
         signal_date = str(ledger.at[idx, "signal_date"])
         same_day_close = np.nan
         same_day_return = np.nan

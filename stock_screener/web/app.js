@@ -267,7 +267,7 @@ async function loadAllCandidates() {
   }
   tbody.innerHTML = data.rows.map(r => {
     const chg = r['涨跌幅%'] ?? r['change_pct'] ?? r['涨跌幅'] ?? 0;
-    const ret = r['next_day_open_return'] ?? r['次日开盘收益'] ?? '';
+    const ret = r['next_return_pct'] ?? r['next_day_open_return'] ?? r['次日开盘收益'] ?? '';
     const cls = chg >= 0 ? 'change-positive' : 'change-negative';
     const retNum = parseFloat(ret);
     const retText = Number.isFinite(retNum) ? retNum.toFixed(2) + '%' : '--';

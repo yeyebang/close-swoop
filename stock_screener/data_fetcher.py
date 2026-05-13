@@ -3,8 +3,8 @@
 """
 统一数据获取层
 
-负责从 AKShare 拉取所有需要的数据，带缓存和降级机制。
-数据源分层：东方财富 > 新浪 > 旧缓存应急
+负责从 AKShare / 直连 HTTP 拉取所有需要的数据，带缓存和降级机制。
+数据源分层：腾讯直连 > 新浪 > 旧缓存应急
 """
 
 import os
@@ -17,11 +17,14 @@ from typing import Optional, Union
 import pandas as pd
 import numpy as np
 from loguru import logger
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     import akshare as ak
 except ImportError:
     ak = None
+
+import requests as _requests
 
 # =====================================================================
 # 全局注入 requests.Session，解决东方财富/新浪 API 频繁断连问题
@@ -358,8 +361,118 @@ class DataFetcher:
 
     # ---- 全市场实时行情 ----
 
+    # 腾讯行情 API 字段索引（qt.gtimg.cn，~分隔）
+    _TX_FIELDS = {
+        "name": 1, "code": 2, "last_price": 3, "pre_close": 4,
+        "open_price": 5, "volume": 6, "change_amt": 31, "change_pct": 32,
+        "high": 33, "low": 34, "amount": 37, "turnover_rate": 38,
+        "amplitude": 43, "volume_ratio": 49,
+    }
+    _TX_HEADERS = {
+        "Referer": "https://finance.qq.com",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    }
+
+    @staticmethod
+    def _to_tx_prefix(code: str) -> str:
+        if code.startswith(("6", "9")):
+            return "sh" + code
+        if code.startswith(("4", "8")):
+            return "bj" + code
+        return "sz" + code
+
+    def _get_all_codes_tx(self) -> list[str]:
+        """获取全量A股代码列表，返回腾讯格式 (sh/sz/bj + 6位)"""
+        cache_file = self.data_dir / "cache_all_codes.json"
+        if cache_file.exists():
+            try:
+                payload = json.loads(cache_file.read_text(encoding="utf-8"))
+                cached_at = datetime.fromisoformat(payload["cached_at"])
+                if (datetime.now() - cached_at).total_seconds() < 86400:
+                    return payload["codes"]
+            except Exception:
+                pass
+
+        if ak is None:
+            return []
+        try:
+            df = ak.stock_info_a_code_name()
+            codes = [
+                self._to_tx_prefix(str(r).zfill(6))
+                for r in df["code"].tolist()
+            ]
+            cache_file.write_text(
+                json.dumps({"cached_at": datetime.now().isoformat(), "codes": codes}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return codes
+        except Exception as e:
+            logger.warning(f"获取股票代码列表失败: {e}")
+            return []
+
+    def _fetch_tencent_batch(self, batch: list[str]) -> list[dict]:
+        """拉取一批腾讯行情，返回行列表"""
+        url = "https://qt.gtimg.cn/q=" + ",".join(batch)
+        try:
+            resp = _requests.get(url, headers=self._TX_HEADERS, timeout=8)
+            resp.raise_for_status()
+        except Exception as e:
+            logger.debug(f"腾讯行情批次失败: {e}")
+            return []
+
+        rows = []
+        for line in resp.text.strip().split("\n"):
+            if "~" not in line or "=" not in line:
+                continue
+            try:
+                raw = line.split('"')[1]
+                parts = raw.split("~")
+                if len(parts) < 50 or not parts[3]:
+                    continue
+                row = {}
+                for col, idx in self._TX_FIELDS.items():
+                    row[col] = parts[idx] if idx < len(parts) else ""
+                row["code"] = DataFetcher.normalize_code(row["code"])
+                # amount 原始单位是万元，转换为元与其他数据源一致
+                try:
+                    row["amount"] = float(row["amount"]) * 10000
+                except (ValueError, TypeError):
+                    row["amount"] = 0.0
+                rows.append(row)
+            except Exception:
+                continue
+        return rows
+
+    def _fetch_tencent_realtime(self) -> Optional[pd.DataFrame]:
+        """腾讯直连批量获取全市场行情（并发5线程，约 3-5 秒完成）"""
+        codes = self._get_all_codes_tx()
+        if not codes:
+            return None
+
+        batch_size = 100
+        batches = [codes[i: i + batch_size] for i in range(0, len(codes), batch_size)]
+        all_rows: list[dict] = []
+
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = {pool.submit(self._fetch_tencent_batch, b): b for b in batches}
+            for fut in as_completed(futures):
+                all_rows.extend(fut.result())
+
+        if not all_rows:
+            return None
+
+        df = pd.DataFrame(all_rows)
+        num_cols = [c for c in df.columns if c != "name" and c != "code"]
+        for col in num_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        df["name"] = df["name"].fillna("")
+        df["采集时间"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        df["数据源"] = "腾讯"
+        logger.info(f"腾讯行情获取成功: {len(df)} 条")
+        return df
+
     def get_all_realtime(self) -> pd.DataFrame:
-        """获取全市场实时行情（东方财富优先，新浪备用）"""
+        """获取全市场实时行情（腾讯直连优先，新浪备用）"""
         logger.info("正在获取全市场实时数据...")
         ttl_seconds = int(self.config.get("realtime_cache_ttl_seconds", 120))
 
@@ -372,23 +485,24 @@ class DataFetcher:
         if cached_at is not None:
             logger.info(f"实时缓存已过期: {cached_at}，重新拉取")
 
-        fetchers = [
-            ("东方财富", ak.stock_zh_a_spot_em),
-            ("新浪", ak.stock_zh_a_spot),
-        ]
+        # 腾讯直连（主力）
+        df = self._fetch_tencent_realtime()
+        if df is not None and not df.empty:
+            self.cache.write("realtime", df)
+            return df
 
-        last_error = None
-        for source_name, fetch_func in fetchers:
-            df = self._safe_fetch(fetch_func, source_name)
-            if df is not None and not df.empty:
-                df = self._normalize_realtime(df, source_name)
-                self.cache.write("realtime", df)
-                return df
+        # 新浪（备用）—— 缺量比和换手率，填0托底
+        logger.warning("腾讯行情失败，降级到新浪")
+        if ak is not None:
+            sina_df = self._safe_fetch(ak.stock_zh_a_spot, "新浪")
+            if sina_df is not None and not sina_df.empty:
+                sina_df = self._normalize_realtime(sina_df, "新浪")
+                self.cache.write("realtime", sina_df)
+                return sina_df
 
         # 全部失败，使用旧缓存
         stale_df, stale_at, stale_age = self.cache.read("realtime", today_only=False)
         if not stale_df.empty:
-            source = stale_df["数据源"].iloc[0] if "数据源" in stale_df.columns else "unknown"
             logger.error(f"实时行情接口全部失败，使用最近缓存: {stale_at}，缓存年龄 {self._format_cache_age(stale_age)}")
             return stale_df
 
@@ -397,7 +511,7 @@ class DataFetcher:
 
     @staticmethod
     def _normalize_realtime(df: pd.DataFrame, source: str) -> pd.DataFrame:
-        """统一实时行情列名"""
+        """统一实时行情列名（用于新浪等 AKShare 数据源）"""
         col_map = {
             "代码": "code", "名称": "name", "最新价": "last_price",
             "涨跌幅": "change_pct", "涨跌额": "change_amt", "成交量": "volume",
