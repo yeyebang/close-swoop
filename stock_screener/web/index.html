@@ -13,7 +13,7 @@
       <div class="logo-icon">📈</div>
       <div class="logo-text">
         <h1>尾盘涨停扫描器</h1>
-        <span>Limit-Up Scanner v3.1</span>
+        <span>Tail Strategy Workbench v4.0</span>
       </div>
     </div>
     <nav>
@@ -31,7 +31,7 @@
       </a>
       <a href="#" class="nav-item" data-tab="paper">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg>
-        <span>虚拟盘</span>
+        <span>验证记录</span>
       </a>
       <a href="#" class="nav-item" data-tab="model">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
@@ -50,9 +50,17 @@
     <header class="top-bar">
       <h2 id="pageTitle">仪表盘</h2>
       <div class="top-actions">
-        <button id="scanBtn" class="btn btn-primary" onclick="runScan()">
+        <button id="scanBtn" class="btn btn-primary" onclick="runMarketScan()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-          <span>开始扫描</span>
+          <span>扫描大盘</span>
+        </button>
+        <button id="trackBtn" class="btn btn-secondary" onclick="runTrackScan()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/></svg>
+          <span>跟踪扫描</span>
+        </button>
+        <button id="verifyBtn" class="btn btn-secondary" onclick="runNextVerify()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+          <span>次日验证</span>
         </button>
       </div>
     </header>
@@ -64,7 +72,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
           </div>
           <div class="stat-info">
-            <span class="stat-label">候选股数量</span>
+            <span class="stat-label">今日候选池</span>
             <span class="stat-value" id="statCandidates">--</span>
           </div>
         </div>
@@ -73,7 +81,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23,6 13.5,15.5 8.5,10.5 1,18"/><polyline points="17,6 23,6 23,12"/></svg>
           </div>
           <div class="stat-info">
-            <span class="stat-label">次日高开率</span>
+            <span class="stat-label">历史达标率</span>
             <span class="stat-value" id="statOpenRate">--</span>
           </div>
         </div>
@@ -91,9 +99,15 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
           </div>
           <div class="stat-info">
-            <span class="stat-label">累计收益</span>
+            <span class="stat-label">最终候选</span>
             <span class="stat-value" id="statTotalReturn">--</span>
           </div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>4.0 今日批次</h3>
+        <div id="v4BatchInfo" class="model-info">
+          <p class="empty">尚未创建 4.0 批次</p>
         </div>
       </div>
       <div class="chart-row">
@@ -110,7 +124,7 @@
         <h3>最新候选</h3>
         <div class="table-wrapper">
           <table id="latestTable">
-            <thead><tr><th>代码</th><th>名称</th><th>评分</th><th>涨跌幅</th><th>量比</th><th>5日涨幅</th><th>尾盘30min</th></tr></thead>
+            <thead><tr><th>代码</th><th>名称</th><th>状态</th><th>最终评分</th><th>当日涨幅</th><th>距涨停</th><th>风控原因</th></tr></thead>
             <tbody id="latestTableBody"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody>
           </table>
         </div>
@@ -119,29 +133,38 @@
 
     <div id="candidates" class="tab-content">
       <div class="section-toolbar">
-        <button class="btn btn-secondary" onclick="toggleCandidatesView('latest')">最新扫描</button>
-        <button class="btn btn-secondary" onclick="toggleCandidatesView('history')">历史记录</button>
-        <button id="settleNowBtn" class="btn btn-primary" onclick="runSettleNow()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-          <span>复盘次日收益</span>
-        </button>
+        <button class="btn btn-primary" onclick="runMarketScan()">扫描大盘</button>
+        <button class="btn btn-secondary" onclick="runTrackScan()">跟踪扫描</button>
+        <button class="btn btn-secondary" onclick="runNextVerify()">次日验证</button>
+        <button class="btn btn-secondary" onclick="toggleCandidatesView('latest')">今日候选</button>
+        <button class="btn btn-secondary" onclick="toggleCandidatesView('history')">跟踪快照</button>
+        <button class="btn btn-secondary" onclick="toggleCandidatesView('excluded')">风控剔除</button>
         <span id="settleStatus" class="toolbar-status"></span>
       </div>
       <div id="candidatesLatest" class="card">
-        <h3>最新扫描候选股</h3>
+        <h3>4.0 今日候选池</h3>
         <div class="table-wrapper">
           <table id="allCandidatesTable">
-            <thead><tr><th>日期</th><th>代码</th><th>名称</th><th>收盘价</th><th>涨跌幅</th><th>换手率</th><th>评分</th><th>次日开盘收益</th></tr></thead>
+            <thead><tr><th>状态</th><th>代码</th><th>名称</th><th>当前价</th><th>当日涨幅</th><th>距涨停</th><th>最终评分</th><th>风控原因</th></tr></thead>
             <tbody id="allCandidatesBody"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody>
           </table>
         </div>
       </div>
       <div id="candidatesHistory" class="card" style="display:none">
-        <h3>历史候选股记录</h3>
+        <h3>4.0 跟踪快照</h3>
         <div class="table-wrapper">
           <table id="histCandidatesTable">
-            <thead><tr><th>扫描时间</th><th>代码</th><th>名称</th><th>涨跌幅</th><th>换手率</th><th>评分</th><th>次日开盘收益</th></tr></thead>
-            <tbody id="histCandidatesBody"><tr><td colspan="7" class="empty">点击「历史记录」加载</td></tr></tbody>
+            <thead><tr><th>快照时间</th><th>代码</th><th>名称</th><th>当前价</th><th>跟踪涨幅</th><th>跟踪成交额</th><th>趋势状态</th><th>最终评分</th></tr></thead>
+            <tbody id="histCandidatesBody"><tr><td colspan="8" class="empty">点击「跟踪快照」加载</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="candidatesExcluded" class="card" style="display:none">
+        <h3>4.0 风控剔除池</h3>
+        <div class="table-wrapper">
+          <table id="excludedCandidatesTable">
+            <thead><tr><th>剔除阶段</th><th>代码</th><th>名称</th><th>当前价</th><th>当日涨幅</th><th>成交额</th><th>距涨停</th><th>剔除原因</th></tr></thead>
+            <tbody id="excludedCandidatesBody"><tr><td colspan="8" class="empty">点击「风控剔除」加载</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -192,15 +215,15 @@
       <div class="section-toolbar">
         <button id="paperSettleBtn" class="btn btn-primary" onclick="runSettleNow()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
-          <span>复盘次日收益</span>
+          <span>次日验证</span>
         </button>
         <span id="paperSettleStatus" class="toolbar-status"></span>
       </div>
       <div class="card">
-        <h3>扫描信号跟踪</h3>
+        <h3>4.0 次日验证记录</h3>
         <div class="table-wrapper">
           <table id="paperTable">
-            <thead><tr><th>扫描时间</th><th>代码</th><th>名称</th><th>观察价</th><th>退出价</th><th>收益率</th><th>状态</th></tr></thead>
+            <thead><tr><th>信号日期</th><th>代码</th><th>名称</th><th>买入参考价</th><th>开盘收益</th><th>30分钟收益</th><th>结果</th></tr></thead>
             <tbody id="paperBody"><tr><td colspan="7" class="empty">加载中...</td></tr></tbody>
           </table>
         </div>
@@ -239,7 +262,7 @@
    </button>
    <button class="bottom-nav-item" data-tab="paper">
      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M12 8v8M8 12h8"/></svg>
-     <span>虚拟盘</span>
+          <span>验证记录</span>
    </button>
    <button class="bottom-nav-item" data-tab="model">
      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>

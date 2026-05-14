@@ -1,5 +1,6 @@
 stock_screener/stock-screener/data/
 stock_screener/reports/*.csv
+stock_screener/reports/v4/
 stock_screener/results_*.csv
 stock_screener/paper/paper_trades.csv
 

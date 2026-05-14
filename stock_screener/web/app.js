@@ -1,12 +1,13 @@
 let currentTab = 'dashboard';
 let summaryData = null;
+let v4State = null;
 let currentBacktestMode = 'minute';
 
 const tabTitles = {
   dashboard: '仪表盘',
   candidates: '候选股',
   backtest: '回测',
-  paper: '虚拟盘',
+  paper: '验证记录',
   model: '模型',
 };
 
@@ -76,10 +77,55 @@ async function apiPost(path, data) {
   return res.json();
 }
 
+async function loadV4State() {
+  v4State = await apiGet('/api/v4/state?limit=300');
+  return v4State;
+}
+
+async function runMarketScan() {
+  await runV4Action('/api/v4/market-scan', '扫描大盘中...', '扫描大盘');
+}
+
+async function runTrackScan() {
+  await runV4Action('/api/v4/track', '跟踪扫描中...', '跟踪扫描');
+}
+
+async function runNextVerify() {
+  await runV4Action('/api/v4/verify', '次日验证中...', '次日验证');
+}
+
+async function runV4Action(path, runningText, doneText) {
+  const buttons = ['scanBtn', 'trackBtn', 'verifyBtn']
+    .map(id => document.getElementById(id))
+    .filter(Boolean);
+  buttons.forEach(btn => { btn.disabled = true; });
+  updateScanStatus('running', runningText);
+  const statusEls = [
+    document.getElementById('settleStatus'),
+    document.getElementById('paperSettleStatus'),
+  ].filter(Boolean);
+  statusEls.forEach(el => { el.textContent = runningText; });
+  try {
+    const result = await apiPost(path, {});
+    if (result.error) throw new Error(result.error);
+    updateScanStatus('completed', doneText + '完成');
+    statusEls.forEach(el => { el.textContent = result.message || doneText + '完成'; });
+    _histLoaded = false;
+    _excludedLoaded = false;
+    await loadDashboard();
+    refreshCurrentTab();
+  } catch (e) {
+    updateScanStatus('failed', e.message || '操作失败');
+    statusEls.forEach(el => { el.textContent = e.message || '操作失败'; });
+  } finally {
+    buttons.forEach(btn => { btn.disabled = false; });
+  }
+}
+
 async function runScan() {
   const btn = document.getElementById('scanBtn');
   btn.disabled = true;
-  btn.querySelector('span').textContent = '扫描中...';
+    btn.querySelector('span').textContent = '扫描中...';
   updateScanStatus('running', '扫描中...');
   openScanModal();
   try {
@@ -87,7 +133,7 @@ async function runScan() {
     pollScanStatus();
    } catch (e) {
     btn.disabled = false;
-    btn.querySelector('span').textContent = '开始扫描';
+    btn.querySelector('span').textContent = '扫描大盘';
     updateScanStatus('failed', '扫描失败');
     closeScanModal();
    }
@@ -168,7 +214,7 @@ async function pollScanStatus() {
     if (!status.scan_running) {
       const btn = document.getElementById('scanBtn');
       btn.disabled = false;
-      btn.querySelector('span').textContent = '开始扫描';
+      btn.querySelector('span').textContent = '扫描大盘';
       const progressBar = document.getElementById('scanProgressBar');
       progressBar.classList.remove('indeterminate');
       progressBar.style.width = '100%';
@@ -289,13 +335,15 @@ function resetBacktestButtons() {
 
 async function loadDashboard() {
   summaryData = await apiGet('/api/summary');
+  const v4 = await loadV4State().catch(() => null);
   const s = summaryData;
   const bt = s.backtest || {};
+  const v4Summary = (v4 && v4.summary) || {};
 
-  const candidates = s.candidateCount || 0;
-  const openRate = bt.strong_open_rate_pct ?? bt.touch_limit_rate_pct ?? null;
-  const avgReturn = bt.avg_next_open_return_pct ?? bt.avg_daily_return_pct ?? null;
-  const totalReturn = bt.total_return_pct ?? 0;
+  const candidates = v4Summary['候选股数量'] ?? s.candidateCount ?? 0;
+  const openRate = v4Summary['历史达标率'] ?? bt.strong_open_rate_pct ?? bt.touch_limit_rate_pct ?? null;
+  const avgReturn = v4Summary['平均开盘收益'] ?? bt.avg_next_open_return_pct ?? bt.avg_daily_return_pct ?? null;
+  const finalCount = v4Summary['最终候选数量'] ?? 0;
 
   document.getElementById('statCandidates').textContent = candidates > 0 ? candidates : '--';
 
@@ -306,18 +354,25 @@ async function loadDashboard() {
   if (avgReturn !== null) { avgEl.textContent = avgReturn.toFixed(3) + '%'; avgEl.className = `stat-value ${avgReturn >= 0 ? 'positive' : 'negative'}`; }
 
   const totalEl = document.getElementById('statTotalReturn');
-  totalEl.textContent = totalReturn.toFixed(2) + '%';
-  totalEl.className = `stat-value ${totalReturn >= 0 ? 'positive' : 'negative'}`;
+  totalEl.textContent = finalCount > 0 ? finalCount : '--';
+  totalEl.className = 'stat-value';
+
+  renderV4BatchInfo(v4);
 
   loadLatestCandidates();
   requestAnimationFrame(renderDashboardCharts);
 }
 
 async function loadLatestCandidates() {
+  const v4 = v4State || await loadV4State().catch(() => null);
+  if (v4 && v4.candidates && v4.candidates.length) {
+    renderLatestV4Candidates(v4.candidates.slice(0, 20));
+    return;
+  }
   const data = await apiGet('/api/results?scope=top&limit=20');
   const tbody = document.getElementById('latestTableBody');
   if (!data.rows || data.rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无候选数据</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无候选数据</td></tr>';
     return;
   }
   tbody.innerHTML = data.rows.map(r => {
@@ -336,30 +391,66 @@ async function loadLatestCandidates() {
   }).join('');
 }
 
+function renderV4BatchInfo(v4) {
+  const el = document.getElementById('v4BatchInfo');
+  if (!el) return;
+  const summary = (v4 && v4.summary) || {};
+  const batch = (v4 && v4.latestBatch) || {};
+  if (!Object.keys(summary).length || !summary['批次编号']) {
+    el.innerHTML = '<p class="empty">尚未创建 4.0 批次</p>';
+    return;
+  }
+  const items = [
+    ['批次编号', summary['批次编号']],
+    ['批次状态', batch['当前状态'] || '--'],
+    ['市场环境', batch['市场环境'] || '--'],
+    ['候选股数量', summary['候选股数量']],
+    ['最终候选', summary['最终候选数量']],
+    ['待验证', summary['待验证数量']],
+    ['跟踪快照', summary['跟踪快照数量']],
+    ['历史达标率', summary['历史达标率'] == null ? '--' : summary['历史达标率'] + '%'],
+  ];
+  el.innerHTML = items.map(([label, value]) =>
+    `<div class="model-item"><span class="label">${label}</span><span class="value">${value ?? '--'}</span></div>`
+  ).join('');
+}
+
+function renderLatestV4Candidates(rows) {
+  const tbody = document.getElementById('latestTableBody');
+  tbody.innerHTML = rows.map(r => {
+    const chg = parseFloat(r['当日涨幅%'] ?? 0);
+    const cls = chg >= 0 ? 'change-positive' : 'change-negative';
+    return `<tr>
+      <td>${r['股票代码'] || ''}</td>
+      <td>${r['股票名称'] || ''}</td>
+      <td><span class="badge ${badgeClassForStatus(r['当前状态'])}">${r['当前状态'] || '--'}</span></td>
+      <td><strong>${formatNum(r['最终评分'], 1)}</strong></td>
+      <td class="${cls}">${formatNum(chg, 2)}%</td>
+      <td>${formatNum(r['距涨停%'], 2)}%</td>
+      <td class="text-muted">${r['风控原因'] || '通过'}</td>
+    </tr>`;
+  }).join('');
+}
+
 async function loadAllCandidates() {
-  const data = await apiGet('/api/results?scope=all&limit=500');
+  const v4 = await loadV4State().catch(() => null);
   const tbody = document.getElementById('allCandidatesBody');
-  if (!data.rows || data.rows.length === 0) {
+  if (!v4 || !v4.candidates || v4.candidates.length === 0) {
     tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无数据</td></tr>';
     return;
   }
-  tbody.innerHTML = data.rows.map(r => {
-    const chg = r['涨跌幅%'] ?? r['change_pct'] ?? r['涨跌幅'] ?? 0;
-    const ret = r['next_return_pct'] ?? r['next_day_open_return'] ?? r['次日开盘收益'] ?? '';
+  tbody.innerHTML = v4.candidates.map(r => {
+    const chg = parseFloat(r['当日涨幅%'] ?? 0);
     const cls = chg >= 0 ? 'change-positive' : 'change-negative';
-    const retNum = parseFloat(ret);
-    const retText = Number.isFinite(retNum) ? retNum.toFixed(2) + '%' : '--';
-    const retCls = Number.isFinite(retNum) && retNum >= 0 ? 'change-positive' : 'change-negative';
-    const score = r['final_score'] ?? r['score'] ?? '--';
     return `<tr>
-      <td>${r['行情采集时间'] || r['date'] || ''}</td>
-      <td>${r['代码'] || r['code'] || ''}</td>
-      <td>${r['名称'] || r['name'] || ''}</td>
-      <td>${r['最新价'] || r['price'] || '--'}</td>
-      <td class="${cls}">${parseFloat(chg).toFixed(2)}%</td>
-      <td>${r['换手率%'] ?? r['turnover_rate_daily'] ?? '--'}</td>
-      <td><strong>${score}</strong></td>
-      <td class="${retCls}">${retText}</td>
+      <td><span class="badge ${badgeClassForStatus(r['当前状态'])}">${r['当前状态'] || '--'}</span></td>
+      <td>${r['股票代码'] || ''}</td>
+      <td>${r['股票名称'] || ''}</td>
+      <td>${formatNum(r['当前价'], 2)}</td>
+      <td class="${cls}">${formatNum(chg, 2)}%</td>
+      <td>${formatNum(r['距涨停%'], 2)}%</td>
+      <td><strong>${formatNum(r['最终评分'], 1)}</strong></td>
+      <td class="text-muted">${r['风控原因'] || '通过'}</td>
     </tr>`;
   }).join('');
 }
@@ -435,10 +526,29 @@ async function loadBacktest() {
 }
 
 async function loadPaper() {
-  const data = await apiGet('/api/results?scope=paper');
+  const v4 = await loadV4State().catch(() => null);
   const tbody = document.getElementById('paperBody');
+  if (v4 && v4.verifications && v4.verifications.length) {
+    tbody.innerHTML = v4.verifications.map(r => {
+      const openRet = parseFloat(r['次日开盘收益%']);
+      const next30 = parseFloat(r['次日30分钟收益%']);
+      const ok = String(r['是否达标']) === '1' || r['是否达标'] === 1;
+      return `<tr>
+        <td>${r['交易日期'] || ''}</td>
+        <td>${r['股票代码'] || ''}</td>
+        <td>${r['股票名称'] || ''}</td>
+        <td>${formatNum(r['买入参考价'], 2)}</td>
+        <td class="${openRet >= 0 ? 'change-positive' : 'change-negative'}">${formatNum(openRet, 2)}%</td>
+        <td class="${next30 >= 0 ? 'change-positive' : 'change-negative'}">${formatNum(next30, 2)}%</td>
+        <td><span class="badge ${ok ? 'badge-success' : 'badge-danger'}">${ok ? '达标' : (r['失败原因'] || '未达标')}</span></td>
+      </tr>`;
+    }).join('');
+    return;
+  }
+
+  const data = await apiGet('/api/results?scope=paper');
   if (!data.rows || data.rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无虚拟盘记录</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无验证记录</td></tr>';
     return;
   }
   const rows = data.rows.slice().sort((a, b) => {
@@ -471,10 +581,11 @@ async function loadPaper() {
 
 async function loadModel() {
   const data = await apiGet('/api/summary');
+  const v4 = await loadV4State().catch(() => null);
   const model = data.model || {};
   const info = document.getElementById('modelInfo');
   if (!model.model_type) {
-    info.innerHTML = '<p class="empty">暂无训练数据</p>';
+    renderV4Feedback(info, v4);
     return;
   }
   const items = [
@@ -485,11 +596,32 @@ async function loadModel() {
     ['平均精度', model.valid_average_precision ? model.valid_average_precision.toFixed(4) : '--'],
     ['正样本比例', model.positive_rate_pct ? model.positive_rate_pct.toFixed(2) + '%' : '--'],
   ];
-  info.innerHTML = items.map(([label, value]) =>
+  const modelHtml = items.map(([label, value]) =>
     `<div class="model-item"><span class="label">${label}</span><span class="value">${value}</span></div>`
   ).join('');
+  info.innerHTML = modelHtml + renderV4FeedbackHtml(v4);
 
   drawFeatureImportance(model.features_used || []);
+}
+
+function renderV4Feedback(container, v4) {
+  container.innerHTML = renderV4FeedbackHtml(v4) || '<p class="empty">暂无训练数据</p>';
+}
+
+function renderV4FeedbackHtml(v4) {
+  const fb = (v4 && v4.feedback) || {};
+  if (!Object.keys(fb).length) return '';
+  const items = [
+    ['4.0样本数量', fb['样本数量']],
+    ['成功样本', fb['成功样本数']],
+    ['失败样本', fb['失败样本数']],
+    ['4.0成功率', fb['成功率'] == null ? '--' : fb['成功率'] + '%'],
+    ['建议提高权重', (fb['建议提高权重'] || []).join('、') || '--'],
+    ['建议降低权重', (fb['建议降低权重'] || []).join('、') || '--'],
+  ];
+  return items.map(([label, value]) =>
+    `<div class="model-item"><span class="label">${label}</span><span class="value">${value ?? '--'}</span></div>`
+  ).join('');
 }
 
 function drawEquityChart(bt) {
@@ -746,41 +878,80 @@ async function runSettleNow() {
 
 let _candidatesView = 'latest';
 let _histLoaded = false;
+let _excludedLoaded = false;
 
 function toggleCandidatesView(view) {
   _candidatesView = view;
   document.getElementById('candidatesLatest').style.display = view === 'latest' ? '' : 'none';
   document.getElementById('candidatesHistory').style.display = view === 'history' ? '' : 'none';
+  document.getElementById('candidatesExcluded').style.display = view === 'excluded' ? '' : 'none';
   if (view === 'history' && !_histLoaded) {
     _histLoaded = true;
     loadHistCandidates();
+  }
+  if (view === 'excluded' && !_excludedLoaded) {
+    _excludedLoaded = true;
+    loadExcludedCandidates();
   }
 }
 
 async function loadHistCandidates() {
   const tbody = document.getElementById('histCandidatesBody');
-  tbody.innerHTML = '<tr><td colspan="7" class="empty">加载中...</td></tr>';
-  const data = await apiGet('/api/results?scope=candidates-history&limit=1000');
-  if (!data.rows || data.rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无历史记录</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="8" class="empty">加载中...</td></tr>';
+  const v4 = await loadV4State().catch(() => null);
+  if (!v4 || !v4.snapshots || v4.snapshots.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无跟踪快照</td></tr>';
     return;
   }
-  tbody.innerHTML = data.rows.map(r => {
-    const chg = parseFloat(r['涨跌幅%'] ?? r['change_pct'] ?? 0);
-    const chgCls = chg >= 0 ? 'change-positive' : 'change-negative';
-    const retRaw = parseFloat(r['next_return_pct'] ?? r['next_day_open_return'] ?? '');
-    const retText = Number.isFinite(retRaw) ? retRaw.toFixed(2) + '%' : '--';
-    const retCls = Number.isFinite(retRaw) && retRaw >= 0 ? 'change-positive' : 'change-negative';
-    const score = r['final_score'] ?? r['score'] ?? '--';
-    const dt = r['信号时间'] || r['行情采集时间'] || '';
+  tbody.innerHTML = v4.snapshots.map(r => {
+    const ret = parseFloat(r['跟踪涨幅%'] ?? 0);
+    const retCls = ret >= 0 ? 'change-positive' : 'change-negative';
     return `<tr>
-      <td>${dt}</td>
-      <td>${r['代码'] || r['code'] || ''}</td>
-      <td>${r['名称'] || r['name'] || ''}</td>
-      <td class="${chgCls}">${chg.toFixed(2)}%</td>
-      <td>${r['换手率%'] ?? r['turnover_rate_daily'] ?? '--'}</td>
-      <td><strong>${score}</strong></td>
-      <td class="${retCls}">${retText}</td>
+      <td>${r['快照时间'] || ''}</td>
+      <td>${r['股票代码'] || ''}</td>
+      <td>${r['股票名称'] || ''}</td>
+      <td>${formatNum(r['当前价'], 2)}</td>
+      <td class="${retCls}">${formatNum(ret, 2)}%</td>
+      <td>${formatNum(r['跟踪成交额增量(亿)'], 3)}亿</td>
+      <td>${r['趋势状态'] || '--'}</td>
+      <td><strong>${formatNum(r['最终评分'], 1)}</strong></td>
     </tr>`;
   }).join('');
+}
+
+async function loadExcludedCandidates() {
+  const tbody = document.getElementById('excludedCandidatesBody');
+  tbody.innerHTML = '<tr><td colspan="8" class="empty">加载中...</td></tr>';
+  const v4 = await loadV4State().catch(() => null);
+  if (!v4 || !v4.excluded || v4.excluded.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无风控剔除记录</td></tr>';
+    return;
+  }
+  tbody.innerHTML = v4.excluded.map(r => {
+    const chg = parseFloat(r['当日涨幅%'] ?? 0);
+    const cls = chg >= 0 ? 'change-positive' : 'change-negative';
+    return `<tr>
+      <td>${r['剔除阶段'] || '--'}</td>
+      <td>${r['股票代码'] || ''}</td>
+      <td>${r['股票名称'] || ''}</td>
+      <td>${formatNum(r['当前价'], 2)}</td>
+      <td class="${cls}">${formatNum(chg, 2)}%</td>
+      <td>${formatNum(r['成交额(亿)'], 3)}亿</td>
+      <td>${formatNum(r['距涨停%'], 2)}%</td>
+      <td class="text-muted">${r['剔除原因'] || '--'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function formatNum(value, digits = 2) {
+  const num = parseFloat(value);
+  if (!Number.isFinite(num)) return '--';
+  return num.toFixed(digits);
+}
+
+function badgeClassForStatus(status) {
+  if (status === '最终候选' || status === '增强' || status === '接近涨停') return 'badge-success';
+  if (status === '淘汰' || status === '减弱' || status === '放量滞涨' || status === '冲高回落') return 'badge-danger';
+  if (status === '观察' || status === '跟踪中') return 'badge-warning';
+  return 'badge-info';
 }

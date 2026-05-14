@@ -29,6 +29,12 @@ import requests
 from stock_screener.main import BASE_DIR, CONFIG_FILE, load_config
 from stock_screener.paper import paper_report, load_ledger, settle_pending
 from stock_screener.research import resolve_data_dir, LEGACY_DATA_DIR
+from stock_screener.v4_strategy import (
+    create_market_scan,
+    get_v4_state,
+    track_current_batch,
+    verify_previous_candidates,
+)
 
 
 ROOT_DIR = BASE_DIR.parent
@@ -104,6 +110,12 @@ class UiHandler(BaseHTTPRequestHandler):
                 self._send_json(start_backtest(payload))
             elif parsed.path == "/api/settle-now":
                 self._send_json(start_settle_now())
+            elif parsed.path == "/api/v4/market-scan":
+                self._send_json(create_market_scan(load_config()))
+            elif parsed.path == "/api/v4/track":
+                self._send_json(track_current_batch(payload.get("batch_id"), load_config()))
+            elif parsed.path == "/api/v4/verify":
+                self._send_json(verify_previous_candidates(payload.get("batch_id"), load_config()))
             else:
                 self._send_json({"error": "未知接口"}, status=404)
         except Exception as exc:
@@ -134,6 +146,9 @@ class UiHandler(BaseHTTPRequestHandler):
             self._send_json(get_minute_backtest())
         elif path == "/api/settle/status":
             self._send_json(settle_state())
+        elif path == "/api/v4/state":
+            limit = int(first(query, "limit", "200"))
+            self._send_json(get_v4_state(limit=limit))
         else:
             self._send_json({"error": "未知接口"}, status=404)
 

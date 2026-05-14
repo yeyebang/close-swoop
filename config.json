@@ -27,6 +27,21 @@
         "v3_recent_weight": 0.6,
         "v3_model_weight": 0.35
     },
+    "v4": {
+        "candidate_count": 50,
+        "final_count": 10,
+        "min_listing_days": 60,
+        "min_amount": 100000000,
+        "min_turnover_rate": 0.8,
+        "max_consecutive_limit_up": 3,
+        "max_5d_return": 30.0,
+        "max_10d_return": 50.0,
+        "max_upper_shadow_ratio": 0.45,
+        "exclude_prefixes": ["300", "301", "688", "920"],
+        "near_limit_threshold_pct": 5.0,
+        "target_open_return_pct": 1.0,
+        "target_30min_return_pct": 2.0
+    },
     "filters": {
         "min_volume": 10000,
         "max_price": 50,

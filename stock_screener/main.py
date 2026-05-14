@@ -1239,6 +1239,61 @@ def run_ui(args):
     run(host=host, port=port)
 
 
+def run_v4_market_scan(config):
+    """Run V4 market scan and print a concise Chinese summary."""
+    from stock_screener.v4_strategy import create_market_scan
+    result = create_market_scan(config)
+    batch = result.get("batch", {})
+    print("\nV4 扫描大盘完成")
+    print("=" * 40)
+    print(f"批次编号: {batch.get('batch_id', '')}")
+    print(f"交易日期: {batch.get('trade_date', '')}")
+    print(f"市场环境: {batch.get('market_env', '')}")
+    print(f"扫描股票数: {batch.get('total_scanned', 0)}")
+    print(f"剔除股票数: {batch.get('excluded_count', 0)}")
+    print(f"入池候选数: {batch.get('candidate_count', 0)}")
+
+
+def run_v4_track(config, args):
+    """Run V4 tracking scan for the latest or specified batch."""
+    from stock_screener.v4_strategy import track_current_batch
+    batch_id = args[1] if len(args) > 1 else None
+    result = track_current_batch(batch_id, config)
+    print("\nV4 跟踪扫描完成")
+    print("=" * 40)
+    print(f"批次编号: {result.get('batch_id', '')}")
+    print(result.get("message", ""))
+
+
+def run_v4_verify(config, args):
+    """Verify V4 final candidates for the latest or specified batch."""
+    from stock_screener.v4_strategy import verify_previous_candidates
+    batch_id = args[1] if len(args) > 1 else None
+    result = verify_previous_candidates(batch_id, config)
+    print("\nV4 次日验证完成")
+    print("=" * 40)
+    print(f"批次编号: {result.get('batch_id', '')}")
+    print(result.get("message", ""))
+
+
+def run_v4_state():
+    """Print V4 state summary."""
+    from stock_screener.v4_strategy import get_v4_state
+    state = get_v4_state(limit=10)
+    print("\nV4 当前状态")
+    print("=" * 40)
+    for key, value in state.get("summary", {}).items():
+        print(f"{key}: {value}")
+    rows = state.get("candidates", [])[:10]
+    if rows:
+        print("\nTop候选:")
+        for row in rows:
+            print(
+                f"{row.get('股票代码', '')} {row.get('股票名称', '')} "
+                f"{row.get('当前状态', '')} 分数={row.get('最终评分', '')}"
+            )
+
+
 # ==================== CLI --- 入口 ====================
 
 def main(args=None):
@@ -1264,6 +1319,12 @@ A股尾盘涨停扫描器（改进版）
   python run.py minute-backtest     分钟级回测（14:00选股 -> 当天涨停验证）
   python run.py minute-train        训练分钟级ML模型
   python run.py minute-candidates   输出分钟级候选股（带ML概率排序）
+
+  V4 尾盘策略闭环:
+  python run.py v4-scan             14:00扫描大盘，创建今日候选池
+  python run.py v4-track            跟踪当前候选池，不重新扫描全市场
+  python run.py v4-verify           验证最终候选的次日早盘收益
+  python run.py v4-state            查看当前V4批次状态
 
   其他:
   python run.py paper-report        查看虚拟盘命中率和收益
@@ -1293,6 +1354,14 @@ A股尾盘涨停扫描器（改进版）
         run_minute_train(config, args)
     elif args[0] in ("minute-candidates", "mcandidates", "mc"):
         run_minute_candidates(config, args)
+    elif args[0] in ("v4-scan", "v4-market-scan"):
+        run_v4_market_scan(config)
+    elif args[0] in ("v4-track", "v4-follow"):
+        run_v4_track(config, args)
+    elif args[0] in ("v4-verify", "v4-settle"):
+        run_v4_verify(config, args)
+    elif args[0] in ("v4-state", "v4-status"):
+        run_v4_state()
     elif args[0] in ("paper-report", "paper"):
         run_paper_report()
     elif args[0] in ("explain", "ollama"):

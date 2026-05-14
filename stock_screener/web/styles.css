@@ -181,6 +181,14 @@ body {
   font-weight: 600;
 }
 
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -330,6 +338,7 @@ tr:hover td { background: var(--bg-hover); }
 
 .change-positive { color: var(--success); }
 .change-negative { color: var(--danger); }
+.text-muted { color: var(--text-muted); }
 
 .model-info { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 .model-item {
