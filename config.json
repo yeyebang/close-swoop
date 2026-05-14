@@ -40,7 +40,15 @@
         "exclude_prefixes": ["300", "301", "688", "920"],
         "near_limit_threshold_pct": 5.0,
         "target_open_return_pct": 1.0,
-        "target_30min_return_pct": 2.0
+        "target_30min_return_pct": 2.0,
+        "verification_minute_period": "1",
+        "verification_end_time": "10:00",
+        "schedule": {
+            "scan_time": "14:00",
+            "track_times": ["14:05", "14:10", "14:15", "14:20"],
+            "verify_time": "10:00",
+            "days": "mon-fri"
+        }
     },
     "filters": {
         "min_volume": 10000,

@@ -21,7 +21,7 @@
 14:20 生成最终买入参考
     → 最终评分 = 初筛评分 × 40% + 跟踪评分 × 60% - 风险扣分
 次日 9:30 开盘验证
-    → 结算次日开盘收益 + 30分钟冲高收益
+    → 优先读取分钟K，结算次日开盘收益 + 09:30-10:00冲高收益
     → 成功/失败样本沉淀，反向优化评分权重
 ```
 
@@ -37,6 +37,7 @@ pip install -r requirements.txt
 python run.py v4-scan    # 扫描大盘，创建候选池
 python run.py v4-track   # 跟踪候选池（每隔 5 分钟运行一次）
 python run.py v4-verify # 次日验证候选股的收益表现
+python run.py v4-auto   # 启动自动定时流程
 
 # 启动 Web 界面
 python run.py ui
@@ -55,7 +56,9 @@ python run.py ui
 - **规则评分 + ML 模型** — 主观经验评分 + LightGBM 预测次日高开概率
 - **分时段跟踪** — 14:00-14:20 多次跟踪候选池，计算跟踪评分
 - **二次增强** — 同花顺/腾讯分笔数据验证
-- **次日验证闭环** — 真实扫描信号次日标记成功/失败，反向优化后续评分
+- **决策解释** — 展示进入最终候选、淘汰或降权的原因
+- **次日验证闭环** — 优先使用真实分钟K计算 09:30-10:00 冲高收益，次日标记成功/失败，反向优化后续评分
+- **自动定时流程** — 支持 14:00 建池、14:05/10/15/20 跟踪、次日 10:00 验证
 - **全中文化 UI** — 所有表格、状态、原因、指标均使用中文展示
 
 ### 回测系统
@@ -83,6 +86,7 @@ python run.py v4-scan             # 扫描大盘，创建今日候选池
 python run.py v4-track            # 跟踪当前候选池，生成跟踪快照
 python run.py v4-verify           # 验证前一交易日的最终候选收益
 python run.py v4-state            # 查看当前批次状态和 Top 候选
+python run.py v4-auto             # 启动 V4 自动定时流程
 ```
 
 ### 扫描（旧版）
@@ -125,9 +129,9 @@ python run.py explain <model>     # Ollama AI 分析
 │ 侧边导航     │ 顶部栏（尾盘涨停扫描器 v4.0 + 主动作按钮）      │
 │            ├─────────────────────────────────────────────┤
 │ 仪表盘      │ 扫描大盘/跟踪扫描/次日验证 + 统计卡片 + 候选分布 │
-│ 候选股      │ 今日候选池 / 跟踪快照 / 最终候选 / 验证结果     │
+│ 候选股      │ 今日候选池 / 跟踪快照 / 风控剔除 / 决策解释     │
 │ 回测       │ 成功/失败样本对比 + 回测指标 + 每日明细        │
-│ 虚拟盘      │ 虚拟盘台账（含名称、收益率、状态）            │
+│ 验证记录     │ 次日开盘收益 / 09:30-10:00收益 / 数据源       │
 │ 模型       │ 模型状态 + 特征重要性 + 权重优化建议          │
 └──────────┴─────────────────────────────────────────────┘
 ```
@@ -146,6 +150,8 @@ python run.py explain <model>     # Ollama AI 分析
 | `model_feedback` | `reports/v4/model_feedback.json` | 成功/失败样本反馈和权重建议 |
 
 运行数据保存在 `stock_screener/reports/v4/`，默认不提交到 Git。
+
+次日验证会优先使用分钟 K 计算 09:30-10:00 的真实最高价收益；如果分钟 K 暂时不可用，会回退到日 K 最高价代理，并在验证结果中标记数据源。
 
 ---
 
@@ -198,6 +204,16 @@ stock-screener/
 | `paper.v3_recent_days` | 近期复盘窗口 | 60 |
 | `paper.v3_recent_weight` | 近期模型权重 | 0.6 |
 | `paper.v3_model_weight` | 修正模型权重 | 0.35 |
+| `v4.candidate_count` | V4 入池候选数量 | 50 |
+| `v4.final_count` | V4 最终候选数量 | 10 |
+| `v4.min_amount` | 最低成交额 | 100000000 |
+| `v4.target_open_return_pct` | 次日开盘达标收益 | 1.0 |
+| `v4.target_30min_return_pct` | 次日早盘冲高达标收益 | 2.0 |
+| `v4.verification_minute_period` | 次日验证分钟 K 周期 | 1 |
+| `v4.verification_end_time` | 次日早盘验证截止时间 | 10:00 |
+| `v4.schedule.scan_time` | 自动扫描大盘时间 | 14:00 |
+| `v4.schedule.track_times` | 自动跟踪扫描时间 | 14:05/14:10/14:15/14:20 |
+| `v4.schedule.verify_time` | 自动次日验证时间 | 10:00 |
 
 ---
 
@@ -227,7 +243,6 @@ stock-screener/
 - V4.0 数据模型与风控规则详解
 - 核心模块设计
 - 特征体系详解
-- ML 模型训练流程
 - 数据流说明
 - API 接口文档
 - 已知问题与改进方向
@@ -246,6 +261,7 @@ stock-screener/
 | v3.0 | 2026-05-12 | V3 真实扫描复盘自修正闭环；数据源韧性强化 |
 | v3.1 | 2026-05-13 | 实时行情切换腾讯直连；修复次日开盘收益显示；复盘次日收益按钮；候选股历史记录；扫描弹窗最小化；扫描完成自动结算刷新 |
 | v4.0 | 2026-05-14 | 尾盘策略闭环工作台：风控过滤层、候选池跟踪、次日验证、V4 CLI + Web UI |
+| v4.1 | 2026-05-14 | 自动定时流程、决策解释、真实分钟K早盘验证、风控剔除视图 |
 
 ---
 
@@ -261,6 +277,7 @@ python run.py v4-scan    # scan the market
 python run.py v4-track   # track candidate pool
 python run.py v4-verify  # verify next-day returns
 python run.py v4-state   # checkpoint status
+python run.py v4-auto    # run scheduled workflow
 python run.py ui         # http://127.0.0.1:3002
 ```
 

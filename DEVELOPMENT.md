@@ -166,6 +166,18 @@ v4.0 的目标是把项目从“单次扫描榜单”升级为“尾盘策略闭
 | `python run.py v4-track` | 跟踪最新 4.0 批次候选股，不重新扫描全市场 |
 | `python run.py v4-verify` | 验证最新可验证批次的次日早盘收益 |
 | `python run.py v4-state` | 查看当前 4.0 批次状态和 Top 候选 |
+| `python run.py v4-auto` | 启动 4.0 自动定时流程 |
+
+默认自动流程由 `config.json` 的 `v4.schedule` 控制：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `scan_time` | `14:00` | 扫描大盘建池时间 |
+| `track_times` | `["14:05", "14:10", "14:15", "14:20"]` | 跟踪扫描时间点 |
+| `verify_time` | `10:00` | 次日验证时间 |
+| `days` | `mon-fri` | 定时运行星期 |
+| `verification_minute_period` | `1` | 次日早盘验证分钟 K 周期 |
+| `verification_end_time` | `10:00` | 次日早盘冲高验证截止时间 |
 
 ##### v4.0 运行文件
 
@@ -179,6 +191,10 @@ v4.0 的目标是把项目从“单次扫描榜单”升级为“尾盘策略闭
 | `tracking_snapshots.csv` | 跟踪扫描快照 |
 | `verifications.csv` | 次日验证结果 |
 | `model_feedback.json` | 成功/失败样本反馈和权重建议 |
+
+跟踪扫描后，候选股会写入 `decision_reason`，前端显示为“决策解释”，用于说明进入最终候选、淘汰或降权的原因。
+
+次日验证会优先读取真实分钟 K，计算 09:30 到 `verification_end_time` 的最高价和收益；若分钟 K 暂不可用，则回退到“日K最高价代理”，并在 `next_30min_source` / 前端“数据源”中明确标记，避免把代理值误认为真实 30 分钟收益。
 
 #### v3.1（2026-05-13）
 

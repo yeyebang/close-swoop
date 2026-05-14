@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 
 from stock_screener.main import (
     BASE_DIR,
@@ -50,6 +51,7 @@ DISPLAY_COLUMNS: dict[str, str] = {
     "exclude_reason": "剔除原因",
     "exclude_stage": "剔除阶段",
     "include_reasons": "入选原因",
+    "decision_reason": "决策解释",
     "current_price": "当前价",
     "buy_price": "买入参考价",
     "open": "开盘价",
@@ -85,6 +87,7 @@ DISPLAY_COLUMNS: dict[str, str] = {
     "next_open_return": "次日开盘收益%",
     "next_30min_high": "次日30分钟最高价",
     "next_30min_return": "次日30分钟收益%",
+    "next_30min_source": "30分钟数据源",
     "next_high_return": "次日最高收益%",
     "next_close_return": "次日收盘收益%",
     "trade_label": "是否达标",
@@ -114,6 +117,8 @@ def v4_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
         "near_limit_threshold_pct": 5.0,
         "target_open_return_pct": 1.0,
         "target_30min_return_pct": 2.0,
+        "verification_minute_period": "1",
+        "verification_end_time": "10:00",
     }
     cfg = config or load_config()
     base.update(cfg.get("v4", {}))
@@ -367,7 +372,7 @@ def verify_previous_candidates(batch_id: str | None = None, config: dict[str, An
         if (batch_id, code) in verified_keys:
             continue
         hist = fetcher.get_history(code, int(config.get("backtrack_days", 60)))
-        result = verify_one(row, hist, cfg)
+        result = verify_one(row, hist, cfg, config)
         if not result.pop("_ready", True):
             waiting += 1
             continue
@@ -628,10 +633,48 @@ def build_tracking_metrics(base: pd.Series, rt: pd.Series, cfg: dict[str, Any]) 
         "risk_reasons": "；".join(risk_reasons),
         "tracking_score": round(tracking_score, 2),
         "final_score": round(final_score, 2),
+        "decision_reason": build_decision_reason(status, trend_status, tail_return, amount_delta, limit_distance, pullback, risk_reasons),
     }
 
 
-def verify_one(candidate: pd.Series, hist: pd.DataFrame, cfg: dict[str, Any]) -> dict[str, Any]:
+def build_decision_reason(
+    status: str,
+    trend_status: str,
+    tail_return: float,
+    amount_delta: float,
+    limit_distance: float,
+    pullback: float,
+    risk_reasons: list[str],
+) -> str:
+    reasons = []
+    if status == "最终候选":
+        reasons.append("综合评分进入最终候选")
+    if tail_return >= 1:
+        reasons.append(f"跟踪期上涨{tail_return:.2f}%")
+    elif tail_return < -0.3:
+        reasons.append(f"跟踪期回落{abs(tail_return):.2f}%")
+    if amount_delta >= 50_000_000:
+        reasons.append(f"跟踪成交额增加{amount_delta / 100_000_000:.2f}亿")
+    elif amount_delta <= 0:
+        reasons.append("跟踪期成交未继续放大")
+    if 1 <= limit_distance <= 5:
+        reasons.append(f"距涨停{limit_distance:.2f}%，仍有冲板空间")
+    elif limit_distance > 8:
+        reasons.append(f"距涨停{limit_distance:.2f}%，冲板距离偏远")
+    if pullback > 2:
+        reasons.append(f"冲高回撤{pullback:.2f}%")
+    if trend_status not in {"横盘", ""}:
+        reasons.append(trend_status)
+    reasons.extend(risk_reasons)
+    return "；".join(dict.fromkeys([r for r in reasons if r]))
+
+
+def verify_one(
+    candidate: pd.Series,
+    hist: pd.DataFrame,
+    cfg: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     signal_date = str(candidate.get("trade_date", ""))[:10]
     code = normalize_code(candidate.get("symbol"))
     buy_price = number(candidate.get("current_price")) or number(candidate.get("buy_price"))
@@ -652,27 +695,118 @@ def verify_one(candidate: pd.Series, hist: pd.DataFrame, cfg: dict[str, Any]) ->
     if later.empty:
         return {**base, "_ready": False, "failure_reason": "尚无次日行情"}
     row = later.iloc[0]
+    verify_date = str(row.get("日期"))[:10]
     open_price = number(row.get("开盘"))
-    high_price = number(row.get("最高"))
+    day_high_price = number(row.get("最高"))
     close_price = number(row.get("收盘"))
+    minute_high_price, minute_source = get_next_30min_high(
+        code,
+        verify_date,
+        fallback_high=day_high_price,
+        cfg=cfg,
+        config=config,
+    )
     open_ret = (open_price / buy_price - 1) * 100 if buy_price > 0 else np.nan
-    high_ret = (high_price / buy_price - 1) * 100 if buy_price > 0 else np.nan
+    high_ret = (day_high_price / buy_price - 1) * 100 if buy_price > 0 else np.nan
+    next_30min_ret = (minute_high_price / buy_price - 1) * 100 if buy_price > 0 and minute_high_price > 0 else np.nan
     close_ret = (close_price / buy_price - 1) * 100 if buy_price > 0 else np.nan
-    label = int(open_ret >= float(cfg["target_open_return_pct"]) or high_ret >= float(cfg["target_30min_return_pct"]))
-    failure = "" if label else classify_failure(open_ret, high_ret, close_ret)
+    label = int(open_ret >= float(cfg["target_open_return_pct"]) or next_30min_ret >= float(cfg["target_30min_return_pct"]))
+    failure = "" if label else classify_failure(open_ret, next_30min_ret, close_ret)
     return {
         **base,
-        "verify_date": str(row.get("日期"))[:10],
+        "verify_date": verify_date,
         "next_open_price": round(open_price, 3),
         "next_open_return": round(open_ret, 3),
-        "next_30min_high": round(high_price, 3),
-        "next_30min_return": round(high_ret, 3),
+        "next_30min_high": round(minute_high_price, 3),
+        "next_30min_return": round(next_30min_ret, 3),
+        "next_30min_source": minute_source,
         "next_high_return": round(high_ret, 3),
         "next_close_return": round(close_ret, 3),
         "sell_signal": "次日早盘卖出",
         "trade_label": label,
         "failure_reason": failure,
     }
+
+
+def get_next_30min_high(
+    code: str,
+    verify_date: str,
+    fallback_high: float,
+    cfg: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> tuple[float, str]:
+    """Return 09:30-end_time high with daily high fallback.
+
+    The strategy sells during the first half hour. When minute data is
+    unavailable, returning daily high would overstate precision, so the source
+    field explicitly marks the fallback as daily proxy.
+    """
+    minute_df = fetch_verify_minute_data(code, verify_date, cfg, config)
+    if minute_df.empty:
+        return fallback_high, "日K最高价代理"
+    window = slice_morning_window(minute_df, verify_date, str(cfg.get("verification_end_time", "10:00")))
+    if window.empty:
+        return fallback_high, "日K最高价代理"
+    high_col = first_existing_column(window, ["最高", "high"])
+    if not high_col:
+        return fallback_high, "日K最高价代理"
+    high = pd.to_numeric(window[high_col], errors="coerce").dropna()
+    if high.empty:
+        return fallback_high, "日K最高价代理"
+    return float(high.max()), "分钟K 09:30-10:00"
+
+
+def fetch_verify_minute_data(
+    code: str,
+    verify_date: str,
+    cfg: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    period = str(cfg.get("verification_minute_period", "1"))
+    date_key = verify_date.replace("-", "")
+    cache_dir = V4_DIR / "minute_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"minute_{normalize_code(code)}_{period}_{date_key}.csv"
+    if cache_path.exists():
+        try:
+            return pd.read_csv(cache_path)
+        except Exception:
+            pass
+
+    try:
+        from stock_screener.data_fetcher import DataFetcher as MinuteFetcher
+
+        minute_fetcher = MinuteFetcher(config or load_config())
+        df = minute_fetcher.get_minute_history_by_date(code, verify_date, period=period)
+    except Exception as exc:
+        logger.warning(f"获取 {code} {verify_date} 分钟K失败: {exc}")
+        df = pd.DataFrame()
+
+    if df is not None and not df.empty:
+        df.to_csv(cache_path, index=False, encoding="utf-8-sig")
+        return df
+    return pd.DataFrame()
+
+
+def slice_morning_window(df: pd.DataFrame, verify_date: str, end_time: str) -> pd.DataFrame:
+    time_col = first_existing_column(df, ["时间", "datetime", "日期"])
+    if not time_col:
+        return pd.DataFrame()
+    out = df.copy()
+    out[time_col] = pd.to_datetime(out[time_col], errors="coerce")
+    out = out.dropna(subset=[time_col])
+    if out.empty:
+        return out
+    start = pd.Timestamp(f"{verify_date} 09:30:00")
+    end = pd.Timestamp(f"{verify_date} {end_time}:00" if len(end_time) == 5 else f"{verify_date} {end_time}")
+    return out[(out[time_col] >= start) & (out[time_col] <= end)]
+
+
+def first_existing_column(df: pd.DataFrame, columns: list[str]) -> str:
+    for col in columns:
+        if col in df.columns:
+            return col
+    return ""
 
 
 def mark_final_candidates(df: pd.DataFrame, batch_id: str, final_count: int) -> None:
@@ -682,6 +816,12 @@ def mark_final_candidates(df: pd.DataFrame, batch_id: str, final_count: int) -> 
         return
     top_idx = eligible.sort_values("final_score", ascending=False).head(final_count).index
     df.loc[top_idx, "status"] = "最终候选"
+    for idx in top_idx:
+        existing = str(df.at[idx, "decision_reason"]) if "decision_reason" in df.columns else ""
+        if existing and existing.lower() != "nan":
+            df.at[idx, "decision_reason"] = "综合评分进入最终候选；" + existing
+        else:
+            df.at[idx, "decision_reason"] = "综合评分进入最终候选"
 
 
 def refresh_batch_counts(batch_id: str) -> None:

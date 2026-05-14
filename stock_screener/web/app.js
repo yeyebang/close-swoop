@@ -427,7 +427,7 @@ function renderLatestV4Candidates(rows) {
       <td><strong>${formatNum(r['最终评分'], 1)}</strong></td>
       <td class="${cls}">${formatNum(chg, 2)}%</td>
       <td>${formatNum(r['距涨停%'], 2)}%</td>
-      <td class="text-muted">${r['风控原因'] || '通过'}</td>
+      <td class="text-muted">${r['决策解释'] || r['风控原因'] || '通过'}</td>
     </tr>`;
   }).join('');
 }
@@ -450,7 +450,7 @@ async function loadAllCandidates() {
       <td class="${cls}">${formatNum(chg, 2)}%</td>
       <td>${formatNum(r['距涨停%'], 2)}%</td>
       <td><strong>${formatNum(r['最终评分'], 1)}</strong></td>
-      <td class="text-muted">${r['风控原因'] || '通过'}</td>
+      <td class="text-muted">${r['决策解释'] || r['风控原因'] || '通过'}</td>
     </tr>`;
   }).join('');
 }
@@ -540,6 +540,7 @@ async function loadPaper() {
         <td>${formatNum(r['买入参考价'], 2)}</td>
         <td class="${openRet >= 0 ? 'change-positive' : 'change-negative'}">${formatNum(openRet, 2)}%</td>
         <td class="${next30 >= 0 ? 'change-positive' : 'change-negative'}">${formatNum(next30, 2)}%</td>
+        <td class="text-muted">${r['30分钟数据源'] || '--'}</td>
         <td><span class="badge ${ok ? 'badge-success' : 'badge-danger'}">${ok ? '达标' : (r['失败原因'] || '未达标')}</span></td>
       </tr>`;
     }).join('');

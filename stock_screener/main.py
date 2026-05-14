@@ -1033,6 +1033,73 @@ def auto_scan(config):
         logger.info("定时扫描已停止")
 
 
+def auto_v4(config):
+    """Run the V4 closed-loop workflow on a trading-day schedule."""
+    try:
+        from apscheduler.schedulers.blocking import BlockingScheduler
+    except ImportError:
+        print("需要安装 APScheduler: pip install apscheduler")
+        return
+
+    from stock_screener.v4_strategy import create_market_scan, track_current_batch, verify_previous_candidates
+
+    v4_cfg = config.get("v4", {})
+    schedule_cfg = v4_cfg.get("schedule", {})
+    scan_time = str(schedule_cfg.get("scan_time", "14:00"))
+    track_times = schedule_cfg.get("track_times", ["14:05", "14:10", "14:15", "14:20"])
+    verify_time = str(schedule_cfg.get("verify_time", "10:00"))
+    days = str(schedule_cfg.get("days", "mon-fri"))
+
+    scheduler = BlockingScheduler()
+
+    def parse_hm(value: str) -> tuple[int, int]:
+        hour, minute = value.split(":", 1)
+        return int(hour), int(minute)
+
+    scan_hour, scan_minute = parse_hm(scan_time)
+    scheduler.add_job(
+        create_market_scan,
+        "cron",
+        day_of_week=days,
+        hour=scan_hour,
+        minute=scan_minute,
+        args=[config],
+        id="v4_market_scan",
+        replace_existing=True,
+    )
+    for idx, item in enumerate(track_times):
+        hour, minute = parse_hm(str(item))
+        scheduler.add_job(
+            track_current_batch,
+            "cron",
+            day_of_week=days,
+            hour=hour,
+            minute=minute,
+            args=[None, config],
+            id=f"v4_track_{idx}",
+            replace_existing=True,
+        )
+    verify_hour, verify_minute = parse_hm(verify_time)
+    scheduler.add_job(
+        verify_previous_candidates,
+        "cron",
+        day_of_week=days,
+        hour=verify_hour,
+        minute=verify_minute,
+        args=[None, config],
+        id="v4_verify",
+        replace_existing=True,
+    )
+
+    logger.info("V4 自动流程已设置")
+    logger.info(f"扫描大盘: {scan_time}；跟踪扫描: {', '.join(map(str, track_times))}；次日验证: {verify_time}")
+    logger.info("按 Ctrl+C 退出")
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("V4 自动流程已停止")
+
+
 def run_backtest(config, args):
     """Run the daily proxy backtest against cached history files."""
     top_n = int(args[1]) if len(args) > 1 else int(config.get("top_n", 20))
@@ -1325,6 +1392,7 @@ A股尾盘涨停扫描器（改进版）
   python run.py v4-track            跟踪当前候选池，不重新扫描全市场
   python run.py v4-verify           验证最终候选的次日早盘收益
   python run.py v4-state            查看当前V4批次状态
+  python run.py v4-auto             启动V4自动定时流程
 
   其他:
   python run.py paper-report        查看虚拟盘命中率和收益
@@ -1362,6 +1430,8 @@ A股尾盘涨停扫描器（改进版）
         run_v4_verify(config, args)
     elif args[0] in ("v4-state", "v4-status"):
         run_v4_state()
+    elif args[0] in ("v4-auto", "auto-v4"):
+        auto_v4(config)
     elif args[0] in ("paper-report", "paper"):
         run_paper_report()
     elif args[0] in ("explain", "ollama"):
