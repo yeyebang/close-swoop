@@ -168,7 +168,7 @@ def latest_batch_id() -> str:
     return str(latest["batch_id"])
 
 
-def create_market_scan(config: dict[str, Any] | None = None) -> dict[str, Any]:
+def create_market_scan(config: dict[str, Any] | None = None, progress: Any | None = None) -> dict[str, Any]:
     """Create a 14:00-style market scan batch."""
     ensure_storage()
     config = config or load_config()
@@ -177,12 +177,16 @@ def create_market_scan(config: dict[str, Any] | None = None) -> dict[str, Any]:
     batch_id = now.strftime("%Y%m%d_%H%M%S")
     trade_date = now.strftime("%Y-%m-%d")
 
+    if progress:
+        progress("V4扫描：正在获取全市场实时数据")
     fetcher = DataFetcher(config)
     realtime = fetcher.get_all_realtime()
     if realtime is None or realtime.empty:
         raise RuntimeError("无法获取实时行情，无法创建 4.0 批次")
 
     realtime = normalize_realtime(realtime)
+    if progress:
+        progress(f"V4扫描：获取到 {len(realtime)} 只股票，开始执行风控预筛")
     candidates: list[dict[str, Any]] = []
     excluded_rows: list[dict[str, Any]] = []
     excluded_count = 0
@@ -196,12 +200,15 @@ def create_market_scan(config: dict[str, Any] | None = None) -> dict[str, Any]:
     )
     prefiltered = prefiltered.sort_values("_prefilter_score", ascending=False)
     max_fetch = int(config.get("max_history_fetch", 500))
+    scan_pool = prefiltered.head(max_fetch)
 
-    for _, stock in prefiltered.head(max_fetch).iterrows():
+    for idx, (_, stock) in enumerate(scan_pool.iterrows(), start=1):
         base_risk = base_risk_checks(stock, cfg)
         if base_risk["hard_excluded"]:
             excluded_count += 1
             excluded_rows.append(build_excluded_row(batch_id, trade_date, now, stock, "基础风控", base_risk["reasons"]))
+            if progress and (idx == 1 or idx % 50 == 0 or idx == len(scan_pool)):
+                progress(f"V4扫描：已处理 {idx}/{len(scan_pool)}，入池 {len(candidates)}，剔除 {excluded_count}")
             continue
 
         code = normalize_code(stock["code"])
@@ -210,12 +217,16 @@ def create_market_scan(config: dict[str, Any] | None = None) -> dict[str, Any]:
         if hist_risk["hard_excluded"]:
             excluded_count += 1
             excluded_rows.append(build_excluded_row(batch_id, trade_date, now, stock, "历史风控", hist_risk["reasons"]))
+            if progress and (idx == 1 or idx % 50 == 0 or idx == len(scan_pool)):
+                progress(f"V4扫描：已处理 {idx}/{len(scan_pool)}，入池 {len(candidates)}，剔除 {excluded_count}")
             continue
 
         features = calc_features(stock, history)
         if features is None:
             excluded_count += 1
             excluded_rows.append(build_excluded_row(batch_id, trade_date, now, stock, "特征计算", ["历史特征不足"]))
+            if progress and (idx == 1 or idx % 50 == 0 or idx == len(scan_pool)):
+                progress(f"V4扫描：已处理 {idx}/{len(scan_pool)}，入池 {len(candidates)}，剔除 {excluded_count}")
             continue
         score, max_score = calc_score(features, stock)
         derived = derive_market_fields(stock, history, features, cfg)
@@ -251,9 +262,13 @@ def create_market_scan(config: dict[str, Any] | None = None) -> dict[str, Any]:
             "final_score": initial_score,
             **derived,
         })
+        if progress and (idx == 1 or idx % 50 == 0 or idx == len(scan_pool)):
+            progress(f"V4扫描：已处理 {idx}/{len(scan_pool)}，入池 {len(candidates)}，剔除 {excluded_count}")
 
     candidates_df = pd.DataFrame(candidates)
     if not candidates_df.empty:
+        if progress:
+            progress("V4扫描：候选池评分排序中")
         candidates_df = candidates_df.sort_values("initial_score", ascending=False).head(int(cfg["candidate_count"]))
         candidates = candidates_df.to_dict(orient="records")
 
@@ -272,6 +287,8 @@ def create_market_scan(config: dict[str, Any] | None = None) -> dict[str, Any]:
     }
     append_table(BATCHES_PATH, [batch_row])
     _save_feedback()
+    if progress:
+        progress(f"V4扫描完成：入池 {len(candidates)} 只，风控剔除 {excluded_count} 只")
     return {
         "batch": batch_row,
         "candidates": to_display_records(pd.DataFrame(candidates)),

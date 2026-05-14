@@ -65,7 +65,9 @@ function switchTab(tab) {
 
 async function apiGet(path) {
   const res = await fetch(path);
-  return res.json();
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `请求失败 (${res.status})`);
+  return data;
 }
 
 async function apiPost(path, data) {
@@ -74,7 +76,9 @@ async function apiPost(path, data) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  return res.json();
+  const result = await res.json();
+  if (!res.ok) throw new Error(result.error || `请求失败 (${res.status})`);
+  return result;
 }
 
 async function loadV4State() {
@@ -83,7 +87,7 @@ async function loadV4State() {
 }
 
 async function runMarketScan() {
-  await runV4Action('/api/v4/market-scan', '扫描大盘中...', '扫描大盘');
+  await runV4MarketScan();
 }
 
 async function runTrackScan() {
@@ -119,6 +123,28 @@ async function runV4Action(path, runningText, doneText) {
     statusEls.forEach(el => { el.textContent = e.message || '操作失败'; });
   } finally {
     buttons.forEach(btn => { btn.disabled = false; });
+  }
+}
+
+async function runV4MarketScan() {
+  const btn = document.getElementById('scanBtn');
+  const buttons = ['scanBtn', 'trackBtn', 'verifyBtn']
+    .map(id => document.getElementById(id))
+    .filter(Boolean);
+  buttons.forEach(item => { item.disabled = true; });
+  if (btn) btn.querySelector('span').textContent = '扫描中...';
+  updateScanStatus('running', '扫描大盘中...');
+  openScanModal();
+  try {
+    const result = await apiPost('/api/v4/market-scan', {});
+    if (result.error) throw new Error(result.error);
+    pollScanStatus();
+  } catch (e) {
+    buttons.forEach(item => { item.disabled = false; });
+    if (btn) btn.querySelector('span').textContent = '扫描大盘';
+    updateScanStatus('failed', e.message || '扫描失败');
+    _setScanPhase('扫描启动失败：' + (e.message || '未知错误'));
+    _setBubbleText('扫描启动失败');
   }
 }
 
@@ -210,21 +236,54 @@ function updateScanModal(status) {
 
 async function pollScanStatus() {
   const check = async () => {
-    const status = await apiGet('/api/scan/status');
+    let status;
+    try {
+      status = await apiGet('/api/scan/status');
+    } catch (e) {
+      ['scanBtn', 'trackBtn', 'verifyBtn']
+        .map(id => document.getElementById(id))
+        .filter(Boolean)
+        .forEach(item => { item.disabled = false; });
+      const btn = document.getElementById('scanBtn');
+      if (btn) btn.querySelector('span').textContent = '扫描大盘';
+      updateScanStatus('failed', e.message || '状态获取失败');
+      _setScanPhase('状态获取失败：' + (e.message || '未知错误'));
+      _setBubbleText('状态获取失败');
+      return;
+    }
     if (!status.scan_running) {
       const btn = document.getElementById('scanBtn');
-      btn.disabled = false;
-      btn.querySelector('span').textContent = '扫描大盘';
+      ['scanBtn', 'trackBtn', 'verifyBtn']
+        .map(id => document.getElementById(id))
+        .filter(Boolean)
+        .forEach(item => { item.disabled = false; });
+      if (btn) btn.querySelector('span').textContent = '扫描大盘';
       const progressBar = document.getElementById('scanProgressBar');
       progressBar.classList.remove('indeterminate');
       progressBar.style.width = '100%';
 
       if (status.scan_phase === 'completed') {
         updateScanStatus('completed', '扫描完成');
-        _setScanPhase('扫描完成，正在更新收益数据...');
-        _setBubbleText('更新收益中...');
-        // 自动结算，更新次日收益和虚拟盘状态
-        _autoSettleAfterScan();
+        if (status.scan_kind === 'v4_market') {
+          const result = status.scan_result || {};
+          const batch = result.batch || {};
+          _setScanPhase(result.message || `扫描完成，入池 ${batch.candidate_count ?? 0} 只`);
+          _setBubbleText('扫描完成');
+          _histLoaded = false;
+          _excludedLoaded = false;
+          loadDashboard();
+          refreshCurrentTab();
+          if (!_scanMinimized) {
+            setTimeout(closeScanModal, 2000);
+          } else {
+            document.getElementById('scanMiniBubbleText').textContent = '扫描完成 ✓';
+          }
+        } else {
+          _setScanPhase('扫描完成，正在更新收益数据...');
+          _setBubbleText('更新收益中...');
+          // 自动结算，更新次日收益和虚拟盘状态
+          _autoSettleAfterScan();
+        }
       } else {
         updateScanStatus('failed', status.scan_error || '失败');
         _setScanPhase('扫描失败：' + (status.scan_error || '未知错误'));

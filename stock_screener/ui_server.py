@@ -50,6 +50,8 @@ SERVER_STATE: dict[str, Any] = {
     "scan_returncode": None,
     "scan_phase": "idle",
     "scan_log": [],
+    "scan_kind": None,
+    "scan_result": None,
     "backtest_running": False,
     "backtest_started_at": None,
     "backtest_finished_at": None,
@@ -111,7 +113,7 @@ class UiHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/settle-now":
                 self._send_json(start_settle_now())
             elif parsed.path == "/api/v4/market-scan":
-                self._send_json(create_market_scan(load_config()))
+                self._send_json(start_v4_market_scan())
             elif parsed.path == "/api/v4/track":
                 self._send_json(track_current_batch(payload.get("batch_id"), load_config()))
             elif parsed.path == "/api/v4/verify":
@@ -348,6 +350,8 @@ def start_scan() -> dict[str, Any]:
             "scan_returncode": None,
             "scan_phase": "starting",
             "scan_log": [],
+            "scan_kind": "legacy",
+            "scan_result": None,
         })
         try:
             proc = subprocess.Popen(
@@ -377,6 +381,42 @@ def start_scan() -> dict[str, Any]:
 
     threading.Thread(target=worker, daemon=True).start()
     return {"started": True, "message": "扫描已开始", "state": SERVER_STATE}
+
+
+def start_v4_market_scan() -> dict[str, Any]:
+    if SERVER_STATE["scan_running"]:
+        return {"started": False, "message": "扫描已在运行", "state": SERVER_STATE}
+
+    def worker() -> None:
+        SERVER_STATE.update({
+            "scan_running": True,
+            "scan_started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "scan_finished_at": None,
+            "scan_error": None,
+            "scan_returncode": None,
+            "scan_phase": "V4扫描准备中",
+            "scan_log": [],
+            "scan_kind": "v4_market",
+            "scan_result": None,
+        })
+        try:
+            append_scan_log("V4扫描：任务已启动")
+            result = create_market_scan(load_config(), progress=append_scan_log)
+            SERVER_STATE["scan_result"] = result
+            SERVER_STATE["scan_returncode"] = 0
+            SERVER_STATE["scan_phase"] = "completed"
+        except Exception as exc:
+            message = str(exc)
+            SERVER_STATE["scan_error"] = message
+            SERVER_STATE["scan_returncode"] = 1
+            SERVER_STATE["scan_phase"] = "failed"
+            append_scan_log(f"V4扫描失败：{message}")
+        finally:
+            SERVER_STATE["scan_running"] = False
+            SERVER_STATE["scan_finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"started": True, "message": "V4扫描大盘已开始", "state": SERVER_STATE}
 
 
 def start_backtest(payload: dict[str, Any]) -> dict[str, Any]:
@@ -447,6 +487,13 @@ def append_scan_log(line: str) -> None:
     logs.append(line)
     del logs[:-120]
     phase_map = [
+        ("V4扫描：任务已启动", "V4扫描准备中"),
+        ("V4扫描：正在获取全市场实时数据", "获取实时行情"),
+        ("V4扫描：获取到", "执行风控预筛"),
+        ("V4扫描：已处理", "计算特征评分"),
+        ("V4扫描：候选池评分排序中", "排序保存结果"),
+        ("V4扫描完成", "扫描完成"),
+        ("V4扫描失败", "扫描失败"),
         ("正在获取全市场实时数据", "获取实时行情"),
         ("获取到", "整理市场数据"),
         ("排除ST", "执行基础过滤"),
